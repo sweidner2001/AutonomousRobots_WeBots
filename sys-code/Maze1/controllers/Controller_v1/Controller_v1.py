@@ -109,8 +109,10 @@ class ControllerV1:
             s.enable(self.timestep)
 
         # RGB camera is used only for color-based target detection.
-        self.camera = self.robot.getDevice("camera rgb")
-        self.camera.enable(self.timestep)
+        self.camera_rgb = self.robot.getDevice("camera rgb")
+        self.camera_rgb.enable(self.timestep)
+        self.camera_depth = self.robot.getDevice("camera depth")
+        self.camera_depth.enable(self.timestep)
 
         # 2D lidar is the main mapping/localization source.
         self.lidar = self.robot.getDevice("laser")
@@ -318,21 +320,21 @@ class ControllerV1:
         (world_x, world_y) in metres, or None if no blob detected.
         """
         # Lightweight color segmentation for blue/yellow cylinders.
-        image = self.camera.getImage()
+        image = self.camera_rgb.getImage()
         if image is None:
             return None
 
-        width = self.camera.getWidth()
-        height = self.camera.getHeight()
+        width = self.camera_rgb.getWidth()
+        height = self.camera_rgb.getHeight()
         step = 4
         count = 0
         sum_x = 0
 
         for y in range(0, height, step):
             for x in range(0, width, step):
-                r = self.camera.imageGetRed(image, width, x, y)
-                g = self.camera.imageGetGreen(image, width, x, y)
-                b = self.camera.imageGetBlue(image, width, x, y)
+                r = self.camera_rgb.imageGetRed(image, width, x, y)
+                g = self.camera_rgb.imageGetGreen(image, width, x, y)
+                b = self.camera_rgb.imageGetBlue(image, width, x, y)
 
                 if target == "blue":
                     ok = b > 120 and b > 1.4 * r and b > 1.4 * g
@@ -347,7 +349,7 @@ class ControllerV1:
             return None
 
         centroid_x = sum_x / float(count)
-        fov = self.camera.getFov()
+        fov = self.camera_rgb.getFov()
         bearing = ((centroid_x / width) - 0.5) * fov
 
         # Estimate range using nearest lidar beam near the camera bearing.
@@ -362,6 +364,8 @@ class ControllerV1:
         gx = self.pose.x + obs_range * math.cos(self.pose.theta + bearing)
         gy = self.pose.y + obs_range * math.sin(self.pose.theta + bearing)
         return (gx, gy)
+
+
 
     def _is_reachable(self, goal_world):
         """Check whether a world-frame goal can actually be reached by A*.
@@ -397,6 +401,8 @@ class ControllerV1:
         # blocked = self.map.inflated_occupancy(inflate_cells)
         # path = astar(start, goal, blocked)
         # return len(path) > 0
+
+
 
     def _update_mission(self):
         """Advance the mission state machine based on what the camera currently sees.
@@ -440,6 +446,8 @@ class ControllerV1:
                     self.active_goal = None
                     self.state = Mission.DONE
 
+
+
     def _choose_goal(self):
         """Decide where the robot should go next.
 
@@ -465,6 +473,9 @@ class ControllerV1:
         if frontier is None:
             return None
         return self.map.grid_to_world(frontier[0], frontier[1])
+
+
+
 
     def _plan_if_needed(self):
         """Run A* path planning when the path is stale or missing.
@@ -507,6 +518,9 @@ class ControllerV1:
         self.current_path = path
         self.path_index = 0
 
+
+
+
     def _front_sector_clearance(self, ranges, angle_min, angle_inc):
         """Return the minimum lidar distance inside the forward-facing cone.
 
@@ -533,6 +547,9 @@ class ControllerV1:
             if abs(a) < math.radians(25.0):
                 min_front = min(min_front, r)
         return min_front
+
+
+
 
     def _compute_cmd(self, ranges, angle_min, angle_inc):
         """Compute the desired linear velocity (v) and angular velocity (omega).
@@ -597,6 +614,9 @@ class ControllerV1:
 
         return v, omega
 
+
+
+
     def _set_velocity(self, linear, angular):
         """Convert (linear, angular) robot velocity into left/right wheel speeds.
 
@@ -623,6 +643,9 @@ class ControllerV1:
         self.rear_left_motor.setVelocity(left)
         self.front_right_motor.setVelocity(right)
         self.rear_right_motor.setVelocity(right)
+
+
+
 
     def run(self):
         """Main control loop — executed repeatedly until Webots stops the sim.
