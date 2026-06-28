@@ -216,6 +216,8 @@ class ControllerV1:
         self.pose.y += ds * math.sin(heading)
         self.pose.theta = HelperMethods.wrap_angle(self.pose.theta + dtheta)
 
+
+
     def _read_lidar(self):
         """Fetch the latest lidar scan and compute per-beam angle parameters.
 
@@ -233,6 +235,9 @@ class ControllerV1:
         angle_min = -0.5 * self.lidar_fov
         angle_inc = self.lidar_fov / max(1, self.lidar_resolution - 1)
         return ranges, angle_min, angle_inc
+
+
+
 
     def _update_map(self, ranges, angle_min, angle_inc):
         # -----------------------------------------------------------------
@@ -367,6 +372,77 @@ class ControllerV1:
 
 
 
+    # def _detect_color_blob(self, target_color):
+    #     """
+    #     Completes the missing vision system using OpenCV.
+    #     Returns the (x, y) world coordinates of the target if found, else None.
+    #     """
+    #     import cv2
+    #     import numpy as np
+
+    #     # 1. Get image from Webots and convert to OpenCV format (BGRA to BGR)
+    #     img_array = np.frombuffer(self.camera.getImage(), dtype=np.uint8)
+    #     img_array = img_array.reshape((self.camera.getHeight(), self.camera.getWidth(), 4))
+    #     frame = cv2.cvtColor(img_array, cv2.COLOR_BGRA2BGR)
+    #     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    #     # 2. Define color masks (Tune these HSV values if lighting is weird)
+    #     if target_color == "BLUE":
+    #         lower_bound = np.array([100, 150, 0])
+    #         upper_bound = np.array([140, 255, 255])
+    #     elif target_color == "YELLOW":
+    #         lower_bound = np.array([20, 100, 100])
+    #         upper_bound = np.array([30, 255, 255])
+    #     else:
+    #         return None
+
+    #     # 3. Find blobs
+    #     mask = cv2.inRange(hsv, lower_bound, upper_bound)
+    #     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    #     if not contours:
+    #         return None
+
+    #     # 4. Find the largest contour (ignore tiny noise pixels)
+    #     largest_contour = max(contours, key=cv2.contourArea)
+    #     if cv2.contourArea(largest_contour) < 100: # Minimum pixel area
+    #         return None
+
+    #     # 5. Calculate Centroid and Bearing
+    #     M = cv2.moments(largest_contour)
+    #     if M["m00"] == 0: return None
+    #     cx = int(M["m10"] / M["m00"])
+        
+    #     # Calculate horizontal angle offset from the center of the camera
+    #     img_width = self.camera.getWidth()
+    #     fov = self.camera.getFov()
+    #     angle_offset = ((cx / img_width) - 0.5) * fov
+        
+    #     # 6. Project to World Coordinates using LiDAR mapping
+    #     target_bearing = wrap_angle(self.pose.theta - angle_offset)
+        
+    #     # Find the LiDAR distance at this bearing.
+    #     # We add 0.5 meters to push the target "through" the window glass on the map.
+    #     ranges = self.lidar.getRangeImage()
+    #     # Approximate the index based on the bearing
+    #     # (Assuming Lidar 0 is front. You may need to tweak this index math based on your specific Lidar mounting)
+    #     center_index = len(ranges) // 2 
+    #     index_offset = int(-angle_offset / (self.lidar_fov / self.lidar_resolution))
+    #     lidar_idx = clamp(center_index + index_offset, 0, len(ranges)-1)
+        
+    #     distance = ranges[lidar_idx]
+    #     if math.isinf(distance) or distance > self.lidar_max:
+    #         distance = 3.0 # Guess a distance if Lidar misses it
+            
+    #     distance += 0.5 # Window Labyrinth offset trick
+
+    #     target_x = self.pose.x + distance * math.cos(target_bearing)
+    #     target_y = self.pose.y + distance * math.sin(target_bearing)
+
+    #     return (target_x, target_y)
+    
+
+
     def _is_reachable(self, goal_world):
         """Check whether a world-frame goal can actually be reached by A*.
 
@@ -427,6 +503,17 @@ class ControllerV1:
                 self.blue_goal = blue_obs
                 self.active_goal = self.blue_goal
                 self.state = Mission.GO_BLUE
+            else:
+                # Explore: Plan path to nearest unknown frontier
+                if self.step_count % self.PLAN_PERIOD_STEPS == 0:
+                    robot_cell = self.map.world_to_grid(self.pose.x, self.pose.y)
+                    frontier = self.map.nearest_frontier(robot_cell)
+                    if frontier:
+                        blocked = self.map.inflated_occupancy(int(self.INFLATION_RADIUS_M / self.MAP_RESOLUTION_M))
+                        # self.current_path = astar(robot_cell, frontier, blocked)
+                        self.path_index = 0
+
+
 
         elif self.state == Mission.GO_BLUE:
             if self.blue_goal is not None:
@@ -549,8 +636,6 @@ class ControllerV1:
         return min_front
 
 
-
-
     def _compute_cmd(self, ranges, angle_min, angle_inc):
         """Compute the desired linear velocity (v) and angular velocity (omega).
 
@@ -616,6 +701,98 @@ class ControllerV1:
 
 
 
+def _compute_cmd(self):
+        """
+        Follows the A* path (self.current_path) using a simple Pure Pursuit controller.
+        Returns (left_speed, right_speed)
+        """
+        if not self.current_path or self.path_index >= len(self.current_path):
+            return 0.0, 0.0 # Stop
+
+        # Get next waypoint from grid
+        gx, gy = self.current_path[self.path_index]
+        target_x, target_y = self.map.grid_to_world(gx, gy)
+
+        # Calculate distance and heading error
+        dx = target_x - self.pose.x
+        dy = target_y - self.pose.y
+        distance = math.hypot(dx, dy)
+        target_heading = math.atan2(dy, dx)
+        heading_error = HelperMethods.wrap_angle(target_heading - self.pose.theta)
+
+        # If close enough to waypoint, move to the next one
+        if distance < self.MAP_RESOLUTION_M * 2:
+            self.path_index += 1
+            return self._compute_cmd()
+
+        # Simple P-Controller for steering
+        base_speed = 5.0
+        kp_steer = 10.0
+        
+        # If the turn is too sharp, spin in place first
+        if abs(heading_error) > 0.5: 
+            base_speed = 0.0
+
+        left_speed = base_speed - (kp_steer * heading_error)
+        right_speed = base_speed + (kp_steer * heading_error)
+
+        return HelperMethods.clamp(left_speed, -self.MAX_WHEEL_SPEED, self.MAX_WHEEL_SPEED), \
+               HelperMethods.clamp(right_speed, -self.MAX_WHEEL_SPEED, self.MAX_WHEEL_SPEED)
+
+
+
+    # def _compute_cmd(self, ranges, angle_min, angle_inc):
+    #     """Reactive obstacle avoidance: drive forward, turn away from walls.
+
+    #     No path planning involved. The robot drives straight until something
+    #     appears within SAFE_FRONT_DIST ahead, then turns toward the side
+    #     with more free space.
+
+    #     Sector definitions (robot-frame angles):
+    #       front : beams within ±30°  of 0
+    #       left  : beams between +30° and +90°
+    #       right : beams between -90° and -30°
+
+    #     Returns
+    #     -------
+    #     (v, omega) : linear speed (m/s) and angular rate (rad/s).
+    #     """
+    #     front_min = self.lidar_max
+    #     left_sum = 0.0
+    #     right_sum = 0.0
+    #     left_count = 0
+    #     right_count = 0
+
+    #     for i, r in enumerate(ranges):
+    #         if not math.isfinite(r):
+    #             continue
+    #         a = angle_min + i * angle_inc
+
+    #         if abs(a) < math.radians(30.0):
+    #             front_min = min(front_min, r)
+    #         elif math.radians(30.0) <= a < math.radians(90.0):
+    #             left_sum += r
+    #             left_count += 1
+    #         elif math.radians(-90.0) < a <= math.radians(-30.0):
+    #             right_sum += r
+    #             right_count += 1
+
+    #     left_avg = (left_sum / left_count) if left_count > 0 else self.lidar_max
+    #     right_avg = (right_sum / right_count) if right_count > 0 else self.lidar_max
+
+    #     if front_min < self.SAFE_FRONT_DIST:
+    #         # Obstacle ahead: stop and turn toward the side with more space.
+    #         v = 0.0
+    #         omega = 1.2 if left_avg >= right_avg else -1.2
+    #     else:
+    #         # Path is clear: drive forward at full speed.
+    #         v = 0.35
+    #         omega = 0.0
+
+    #     return v, omega
+
+
+
 
     def _set_velocity(self, linear, angular):
         """Convert (linear, angular) robot velocity into left/right wheel speeds.
@@ -669,10 +846,10 @@ class ControllerV1:
 
             self._read_odometry()
             ranges, angle_min, angle_inc = self._read_lidar()
-            self._update_map(ranges, angle_min, angle_inc)
+            # self._update_map(ranges, angle_min, angle_inc)
 
-            self._update_mission()
-            self._plan_if_needed()
+            # self._update_mission()
+            # self._plan_if_needed()
 
             linear, angular = self._compute_cmd(ranges, angle_min, angle_inc)
             self._set_velocity(linear, angular)
