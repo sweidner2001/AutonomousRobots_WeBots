@@ -1,27 +1,55 @@
 """
-mission.py
-==========
-Named constants for the high-level mission state machine.
+mission.py  --  High-level mission state constants.
+====================================================
+
+WHAT IS A STATE MACHINE?
+--------------------------
+A state machine (or finite-state machine, FSM) models a system that can
+be in exactly ONE "state" at a time and switches between states when
+certain events occur.
+
+For our robot the top-level states are the PHASES of its mission:
+
+  ┌─────────────┐     map complete      ┌──────────────┐
+  │ EXPLORE_MAP │ ─────────────────────>│  DONE        │
+  └─────────────┘                       └──────────────┘
+        │           (if color enabled)        ^
+        │        ┌──────────────┐             │
+        └──────> │ SEARCH_BLUE  │─── found -->│
+                 └──────────────┘             │
+                        │                     │
+                        v                     │
+                 ┌──────────────┐             │
+                 │  GO_BLUE     │             │
+                 └──────────────┘             │
+                        │                     │
+                        v                     │
+                 ┌──────────────┐             │
+                 │ SEARCH_YELLOW│─── found -->│
+                 └──────────────┘             │
+                        │                     │
+                        v                     │
+                 ┌──────────────┐             │
+                 │  GO_YELLOW   │─────────────┘
+                 └──────────────┘
+
+Only EXPLORE_MAP and DONE are implemented in this project.
+The colour-search states are placeholders guarded by MISSION_ENABLE_COLOR.
 """
 
 
 class Mission:
-    """Named constants for the mission state machine.
+    """String constants for the mission state machine.
 
-    The robot progresses through these states in order:
-        EXPLORE_MAP  : Drive frontier-based exploration until the maze is mapped.
-        SEARCH_BLUE  : Explore the maze while scanning the camera for blue.
-        GO_BLUE      : Blue detected and reachable -- navigate to it.
-        SEARCH_YELLOW: Blue reached. Explore while scanning for yellow.
-        GO_YELLOW    : Yellow detected and reachable -- navigate to it.
-        DONE         : Mission complete. Stop motors.
-
-    Only EXPLORE_MAP and DONE are implemented so far; the colour states are
-    scaffolding for the next stage (config.MISSION_ENABLE_COLOR gates them).
+    Using named string constants instead of plain strings prevents typos
+    and makes the code easier to read:
+        if mission == Mission.DONE:   <-- clear intent
+        if mission == "done":         <-- typo-prone
     """
-    EXPLORE_MAP = "EXPLORE_MAP"
-    SEARCH_BLUE = "SEARCH_BLUE"
-    GO_BLUE = "GO_BLUE"
-    SEARCH_YELLOW = "SEARCH_YELLOW"
-    GO_YELLOW = "GO_YELLOW"
-    DONE = "DONE"
+
+    EXPLORE_MAP   = "EXPLORE_MAP"   # Drive frontier exploration until fully mapped.
+    SEARCH_BLUE   = "SEARCH_BLUE"   # Explore while looking for a blue object.
+    GO_BLUE       = "GO_BLUE"       # Blue found -- navigate to it.
+    SEARCH_YELLOW = "SEARCH_YELLOW" # Blue reached -- now look for yellow.
+    GO_YELLOW     = "GO_YELLOW"     # Yellow found -- navigate to it.
+    DONE          = "DONE"          # Mission complete -- stop all motors.

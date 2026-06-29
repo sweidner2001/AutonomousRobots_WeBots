@@ -1,38 +1,64 @@
 """
 Controller_v1.py  --  Webots entry point for the RosBot maze explorer.
-======================================================================
+=======================================================================
 
-This file is intentionally tiny.  All behaviour lives in classes:
+THIS IS THE FILE WEBOTS LAUNCHES.
 
-    Robot        (robot.py)            -- hardware abstraction
-    OccupancyGrid(occupancy_grid.py)   -- log-odds mapping
-    Odometry     (odometry.py)         -- pose from encoders + IMU
-    FrontierDetector (frontier.py)     -- frontier detection
-    PathPlanner  (planner.py)          -- inflation + A* + target choice
-    Pilot        (pilot.py)            -- path following + reactive safety
-    MapViz       (mapviz.py)           -- live matplotlib map
-    Mission      (mission.py)          -- mission state constants
-    Explorer / MazeExplorer (explorer.py) -- exploration FSM + orchestrator
+HOW WEBOTS FINDS AND RUNS A CONTROLLER
+-----------------------------------------
+In the Webots world editor:
+  Scene tree -> Rosbot node -> controller field -> "Controller_v1"
 
-Assign this controller to the Rosbot in Webots
-(Scene tree -> Rosbot -> controller -> "Controller_v1").
+Webots looks for a Python file named "Controller_v1.py" in the
+controllers/Controller_v1/ folder and runs it as a Python script.
+
+WHY IS THIS FILE SO SHORT?
+----------------------------
+All the interesting behaviour lives in separate, well-named classes.
+This file is intentionally minimal: it just adds the project root to
+Python's import path and calls MazeExplorer().run().
+
+This is a common software engineering pattern:  keep the "entry point"
+as simple as possible and delegate all logic to well-tested classes.
+
+THE MODULE LAYOUT
+------------------
+    robot.py            -- Hardware abstraction (motors, sensors)
+    odometry.py         -- Pose estimation from encoders + IMU
+    occupancy_grid.py   -- Probabilistic map (log-odds grid)
+    frontier.py         -- Frontier detection (explore edges)
+    planner.py          -- Obstacle inflation + A* path planning
+    pilot.py            -- Pure-pursuit path following + reactive safety
+    mapviz.py           -- Live matplotlib visualisation
+    mission.py          -- High-level mission state constants
+    explorer.py (Maze5) -- Exploration FSM + top-level orchestrator
+
+HOW PYTHON IMPORTS WORK HERE
+------------------------------
+Webots launches this file from inside the controllers/ folder.
+The "Maze4" and "Maze5" packages must be importable, so we need their
+parent directory (the repository root) to be in sys.path.
+
+We compute the repository root as:
+  __file__        = .../sys-code/Maze4/controllers/Controller_v1/Controller_v1.py
+  go up 3 levels  = .../sys-code/
+  -> that is the folder that contains both "Maze4" and "Maze5"
+
+We insert that path into sys.path[0] so Python finds the packages.
 """
 
 import os
 import sys
 
-# The modules use absolute package imports (Maze5.controllers.Controller_v1.*),
-# so the repository root (the parent of the "Maze5" folder) must be importable.
-# Webots launches this file directly, so we add that root to sys.path here.
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.abspath(os.path.join(_HERE, os.pardir, os.pardir, os.pardir))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
 
-from Maze5.controllers.Controller_v1.explorer import MazeExplorer
+
+# The orchestrator (MazeExplorer) lives in Maze5's explorer module.
+# It imports all implementation modules from Maze4.
+from Maze4.controllers.Controller_v1.explorer import MazeExplorer
 
 
 def main():
+    """Create the explorer and run the simulation loop."""
     MazeExplorer().run()
 
 

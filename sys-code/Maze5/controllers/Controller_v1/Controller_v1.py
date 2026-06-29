@@ -24,10 +24,10 @@ import sys
 # The modules use absolute package imports (Maze5.controllers.Controller_v1.*),
 # so the repository root (the parent of the "Maze5" folder) must be importable.
 # Webots launches this file directly, so we add that root to sys.path here.
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.abspath(os.path.join(_HERE, os.pardir, os.pardir, os.pardir))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+# _HERE = os.path.dirname(os.path.abspath(__file__))
+# _REPO_ROOT = os.path.abspath(os.path.join(_HERE, os.pardir, os.pardir, os.pardir))
+# if _REPO_ROOT not in sys.path:
+#     sys.path.insert(0, _REPO_ROOT)
 
 from Maze5.controllers.Controller_v1.explorer import MazeExplorer
 

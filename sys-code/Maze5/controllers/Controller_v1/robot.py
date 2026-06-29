@@ -22,7 +22,7 @@ import numpy as np
 
 from controller import Robot as WebotsRobot
 
-import Maze5.controllers.Controller_v1.config as C
+import Maze4.controllers.Controller_v1.config as C
 
 
 class Robot:

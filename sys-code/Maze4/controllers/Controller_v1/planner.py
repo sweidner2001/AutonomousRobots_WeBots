@@ -1,105 +1,238 @@
 """
-planner.py
-==========
-Grid path planning (A*) plus obstacle inflation and frontier-target selection.
+planner.py  --  Grid path planning (A*) and frontier-target selection.
+=======================================================================
 
-Layers derived from the occupancy grid:
-  * occupied (inflated by the robot radius) -> blocked
-  * free                                    -> cheap to cross
-  * unknown                                 -> traversable but penalised
-    (so the robot prefers known-free routes but will push into the unknown to
-     actually reach a frontier).
+WHAT DOES THIS FILE DO?
+------------------------
+Given the occupancy map and a set of frontier clusters, this module:
+  1. INFLATES obstacles so that the planned path stays safely away from walls.
+  2. Runs A* to find the shortest (cheapest) path from the robot to a target.
+  3. Selects the BEST frontier cluster to drive to next.
+
+OBSTACLE INFLATION  (also called "configuration space expansion")
+-----------------------------------------------------------------
+If we planned paths using the raw obstacle map, the robot might cut
+corners and physically touch walls (the robot has a physical radius).
+
+To prevent this, we expand every occupied cell outward by INFLATE_RADIUS_CELLS
+in all directions BEFORE planning.  After inflation, any cell that A*
+avoids is already far enough from the real wall to fit the robot.
+
+  Real wall cells:    X
+  Inflated cells:     i  (robot centre may not enter these)
+  Safe free cells:    .  (robot centre can be here)
+
+  . . . . . .
+  . . i i i .
+  . . i X i .     <- example 1-cell inflation around a wall cell
+  . . i i i .
+  . . . . . .
+
+A* PATH PLANNING
+-----------------
+A* ("A-star") is a classic graph search algorithm (Hart, 1968) that
+finds the shortest path between two nodes.  On a grid, each cell is a
+node, and we can move to any of the 8 neighbours.
+
+A* uses a PRIORITY QUEUE ("min-heap") ordered by:
+  f(n) = g(n) + h(n)
+    g(n) = exact cost to reach cell n from the start
+    h(n) = heuristic estimate of cost from n to goal
+           (we use the octile distance, which is exact for 8-connected grids)
+
+By always expanding the cell with lowest f(n), A* is guaranteed to find
+the optimal path.
+
+COST FUNCTION
+--------------
+In a maze some cells are UNKNOWN (never observed).  The robot is allowed
+to plan through unknown cells (it needs to, to actually reach a frontier),
+but unknown cells are penalised with a cost multiplier UNKNOWN_TRAVERSAL_COST.
+This makes A* prefer paths through KNOWN FREE space.
+
+FRONTIER TARGET SELECTION
+--------------------------
+We have multiple frontier clusters.  Which one should the robot go to?
+We use a simple cost function:
+
+  cost = path_length_m - INFO_GAIN_WEIGHT * sqrt(cluster_size)
+
+Lower cost = better target.
+  - Nearer targets cost less (shorter path = lower path_length_m).
+  - Larger frontier clusters cost less (more unexplored area = higher gain).
+INFO_GAIN_WEIGHT controls the tradeoff between distance and information gain.
 """
 
-import heapq
+import heapq   # Python's built-in min-heap priority queue
 import math
 
 import numpy as np
 
-import Maze5.controllers.Controller_v1.config as C
+import Maze4.controllers.Controller_v1.config as C
 
 
 class PathPlanner:
-    _NEIGH = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
-              (-1, -1, 1.41421), (-1, 1, 1.41421),
-              (1, -1, 1.41421), (1, 1, 1.41421)]
+    """Provides obstacle inflation, A* planning, and frontier-target selection."""
 
-    # ------------------------------------------------------------------ #
-    # Cost layers
-    # ------------------------------------------------------------------ #
+    # The 8 possible move directions from any grid cell.
+    # Format: (delta_row, delta_col, move_cost)
+    # Cardinal moves (up/down/left/right) cost 1.0.
+    # Diagonal moves cost sqrt(2) ≈ 1.41421 (Pythagorean theorem).
+    _NEIGH = [
+        (-1,  0, 1.0    ),  # up
+        ( 1,  0, 1.0    ),  # down
+        ( 0, -1, 1.0    ),  # left
+        ( 0,  1, 1.0    ),  # right
+        (-1, -1, 1.41421),  # up-left   (diagonal)
+        (-1,  1, 1.41421),  # up-right
+        ( 1, -1, 1.41421),  # down-left
+        ( 1,  1, 1.41421),  # down-right
+    ]
+
+    # ---------------------------------------------------------------------- #
+    # Cost layer construction
+    # ---------------------------------------------------------------------- #
     def build_cost_layers(self, grid):
-        """Return (blocked, unknown) boolean arrays for the planner."""
+        """Compute the two binary layers that A* uses.
+
+        Returns:
+            blocked (np.ndarray bool): True where the robot CANNOT go
+                (occupied cells + inflation margin around them).
+            unknown (np.ndarray bool): True where the cell has never been
+                observed (used to add the unknown traversal penalty).
+        """
         blocked = self._inflate(grid.occ_mask(), C.INFLATE_RADIUS_CELLS)
         unknown = grid.unknown_mask()
         return blocked, unknown
 
     @staticmethod
     def _inflate(occ_mask, radius_cells):
-        """Binary dilation of occ_mask by radius_cells (Chebyshev), numpy only."""
+        """Expand every True cell outward by `radius_cells` in all 8 directions.
+
+        This is a binary dilation using only NumPy array shifts (no scipy).
+        Each iteration of the loop adds exactly one cell of margin.
+        After `radius_cells` iterations, the margin is `radius_cells` cells wide.
+
+        Args:
+            occ_mask (np.ndarray bool): raw occupied-cell mask from the grid.
+            radius_cells (int):         how many cells to grow in each direction.
+
+        Returns:
+            np.ndarray bool: inflated obstacle mask.
+        """
         out = occ_mask.copy()
         for _ in range(radius_cells):
             s = out.copy()
-            s[:-1, :] |= out[1:, :]
-            s[1:, :] |= out[:-1, :]
-            s[:, :-1] |= out[:, 1:]
-            s[:, 1:] |= out[:, :-1]
-            s[:-1, :-1] |= out[1:, 1:]
-            s[1:, 1:] |= out[:-1, :-1]
-            s[:-1, 1:] |= out[1:, :-1]
-            s[1:, :-1] |= out[:-1, 1:]
+            # Spread True cells in all 8 directions by 1 cell.
+            s[:-1, :]  |= out[1:,  :]   # up
+            s[1:,  :]  |= out[:-1, :]   # down
+            s[:,  :-1] |= out[:,  1:]   # left
+            s[:,   1:] |= out[:, :-1]   # right
+            s[:-1, :-1] |= out[1:,   1:]  # up-left
+            s[1:,   1:] |= out[:-1, :-1]  # down-right
+            s[:-1,  1:] |= out[1:,  :-1]  # up-right
+            s[1:,  :-1] |= out[:-1,  1:]  # down-left
             out = s
         return out
 
-    # ------------------------------------------------------------------ #
-    # A*
-    # ------------------------------------------------------------------ #
+    # ---------------------------------------------------------------------- #
+    # A* path search
+    # ---------------------------------------------------------------------- #
     def astar(self, blocked, unknown, start_rc, goal_rc):
-        """A* on the grid. start/goal are (row, col). Returns path or None."""
+        """Find the cheapest path from start_rc to goal_rc on the grid.
+
+        Args:
+            blocked   (np.ndarray bool): cells the robot cannot enter.
+            unknown   (np.ndarray bool): cells penalised by UNKNOWN_TRAVERSAL_COST.
+            start_rc  (tuple): (row, col) of the starting cell.
+            goal_rc   (tuple): (row, col) of the goal cell.
+
+        Returns:
+            List of (row, col) tuples from start to goal (inclusive),
+            or None if no path exists.
+        """
         nrows, ncols = blocked.shape
         sr, sc = start_rc
         gr, gc = goal_rc
+
+        # --- Sanity checks -------------------------------------------------
+        # Both start and goal must lie inside the grid.
         if not (0 <= sr < nrows and 0 <= sc < ncols):
             return None
         if not (0 <= gr < nrows and 0 <= gc < ncols):
             return None
+        # Goal must not be a blocked (wall) cell.
         if blocked[gr, gc]:
             return None
+        # Start must not be a blocked cell either.
+        # This can happen when the robot is very close to a wall and the
+        # inflation zone covers the robot's own grid cell.
+        if blocked[sr, sc]:
+            return None
 
+        # --- Octile heuristic: exact lower bound for 8-connected grids ----
         def h(r, c):
+            """Octile distance from (r,c) to goal.
+
+            Allows diagonal moves at cost sqrt(2).
+            For the Manhattan remainder, straight moves cost 1.0.
+            Formula: (D + D_diag) * 1.0 + min(dr,dc) * (sqrt(2) - 2 * 1.0)
+                   = dr + dc + min(dr,dc) * (sqrt(2) - 2)
+            """
             dr, dc = abs(r - gr), abs(c - gc)
             return (dr + dc) + (1.41421 - 2) * min(dr, dc)
 
+        # --- Priority queue (min-heap) ------------------------------------
+        # Each entry: (f_cost, g_cost, (row, col))
+        # Python's heapq is a min-heap, so the lowest f_cost pops first.
         open_heap = [(h(sr, sc), 0.0, (sr, sc))]
-        came_from = {}
-        g_score = {(sr, sc): 0.0}
-        closed = set()
+        came_from = {}                    # cell -> parent cell (for path reconstruction)
+        g_score   = {(sr, sc): 0.0}      # best-known cost to reach each cell
+        closed    = set()                 # cells already finalized
 
         while open_heap:
             _, g_cur, cur = heapq.heappop(open_heap)
+
+            # Skip if this cell was already finalised with a better cost.
             if cur in closed:
                 continue
             closed.add(cur)
+
+            # Goal reached -> reconstruct and return the path.
             if cur == (gr, gc):
                 return self._reconstruct(came_from, cur)
 
             r, c = cur
             for dr, dc, step in self._NEIGH:
                 rr, cc = r + dr, c + dc
+                # Skip out-of-bounds, blocked, or already-closed cells.
                 if not (0 <= rr < nrows and 0 <= cc < ncols):
                     continue
                 if blocked[rr, cc] or (rr, cc) in closed:
                     continue
+
+                # Unknown cells are more expensive to cross.
                 cost = step * (C.UNKNOWN_TRAVERSAL_COST if unknown[rr, cc] else 1.0)
-                tentative = g_cur + cost
-                if tentative < g_score.get((rr, cc), math.inf):
-                    g_score[(rr, cc)] = tentative
+                tentative_g = g_cur + cost
+
+                if tentative_g < g_score.get((rr, cc), math.inf):
+                    # This path to (rr, cc) is better than anything seen before.
+                    g_score[(rr, cc)]  = tentative_g
                     came_from[(rr, cc)] = cur
-                    heapq.heappush(open_heap,
-                                   (tentative + h(rr, cc), tentative, (rr, cc)))
-        return None
+                    heapq.heappush(
+                        open_heap,
+                        (tentative_g + h(rr, cc), tentative_g, (rr, cc))
+                    )
+
+        return None  # no path exists
 
     @staticmethod
     def _reconstruct(came_from, cur):
+        """Trace back through came_from to build the path from start to goal.
+
+        Starting at the goal, follow parent pointers until we reach the
+        start (which has no entry in came_from).  Reverse the result.
+        """
         path = [cur]
         while cur in came_from:
             cur = came_from[cur]
@@ -107,20 +240,47 @@ class PathPlanner:
         path.reverse()
         return path
 
-    # ------------------------------------------------------------------ #
+    # ---------------------------------------------------------------------- #
     # Frontier target selection
-    # ------------------------------------------------------------------ #
+    # ---------------------------------------------------------------------- #
     def choose_target(self, grid, clusters, robot_xy, blocked, unknown):
-        """Pick the best reachable frontier cluster.
+        """Pick the best reachable frontier cluster for the robot to drive to.
 
-        Returns (path_rc, cluster) or (None, None).
-        Cost = path_length_m - INFO_GAIN_WEIGHT * sqrt(cluster_size).
-        Clusters are tried nearest-first so we usually stop after a few A* calls.
+        Tries clusters from nearest to farthest (to minimise the number of
+        A* calls before finding a good option).  Stops early once we find
+        a very close cluster.
+
+        Args:
+            grid      : OccupancyGrid (for coordinate conversion).
+            clusters  : list of frontier cluster dicts from FrontierDetector.
+            robot_xy  : (x, y) of the robot in world coordinates (m).
+            blocked   : inflated obstacle mask (from build_cost_layers).
+            unknown   : unobserved cell mask.
+
+        Returns:
+            (path_rc, cluster) where:
+              path_rc  : list of (row, col) tuples from robot to frontier,
+                         or None if no reachable frontier was found.
+              cluster  : the chosen cluster dict, or None.
         """
         rx, ry = robot_xy
+
+        # Convert robot world position to grid cell.
         sc0, sr0 = grid.world_to_grid(rx, ry)
         start_rc = (sr0, sc0)
 
+        # If the robot's cell is inside the inflation zone (blocked), find
+        # the nearest non-blocked cell to use as the A* start point.
+        # This can happen when the robot is very close to a wall and the
+        # inflation margin covers the robot's own cell.
+        if (0 <= sr0 < blocked.shape[0] and 0 <= sc0 < blocked.shape[1]
+                and blocked[sr0, sc0]):
+            alt = self._nearest_free(blocked, start_rc, max_r=5)
+            if alt is None:
+                return None, None  # robot completely surrounded -> give up
+            start_rc = alt
+
+        # Sort clusters by straight-line distance (nearest first).
         def euclid(cl):
             gr, gc = cl["centroid"]
             wx, wy = grid.grid_to_world(gc, gr)
@@ -132,46 +292,80 @@ class PathPlanner:
         best_path = None
         best_cost = math.inf
         tried = 0
+
         for cl in clusters:
+            # Find a non-blocked cell near the frontier centroid for A* goal.
             goal_rc = self._nearest_free(blocked, cl["centroid"])
             if goal_rc is None:
-                continue
+                continue  # centroid and surroundings all blocked; skip
+
             path = self.astar(blocked, unknown, start_rc, goal_rc)
             tried += 1
             if path is None:
                 if tried > 12:
-                    break
+                    break  # tried enough; no reachable frontier found
                 continue
+
+            # Compute the combined cost (distance penalty, information gain).
             length_m = (len(path) - 1) * grid.res
             cost = length_m - C.INFO_GAIN_WEIGHT * math.sqrt(cl["size"])
+
             if cost < best_cost:
-                best_cost, best, best_path = cost, cl, path
+                best_cost = cost
+                best      = cl
+                best_path = path
+
+            # If the best path found so far is very short, take it immediately.
             if best is not None and length_m < 1.0:
                 break
+
         return best_path, best
 
+    # ---------------------------------------------------------------------- #
     @staticmethod
     def _nearest_free(blocked, rc, max_r=4):
-        """Spiral outward from rc to find a non-blocked cell."""
+        """Find the nearest non-blocked cell to rc, searching outward.
+
+        Searches in a square spiral around rc, checking the outermost
+        "shell" of each radius in turn (Chebyshev distance).
+
+        Args:
+            blocked : blocked cell mask.
+            rc      : (row, col) centre to search around.
+            max_r   : maximum search radius in cells.
+
+        Returns:
+            (row, col) of the nearest non-blocked cell, or None if none
+            found within max_r.
+        """
         r0, c0 = rc
         nrows, ncols = blocked.shape
         for rad in range(max_r + 1):
             for dr in range(-rad, rad + 1):
                 for dc in range(-rad, rad + 1):
                     if max(abs(dr), abs(dc)) != rad:
-                        continue
+                        continue  # only check the outermost shell at each radius
                     r, c = r0 + dr, c0 + dc
                     if 0 <= r < nrows and 0 <= c < ncols and not blocked[r, c]:
                         return (r, c)
         return None
 
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
+    # ---------------------------------------------------------------------- #
+    # Utility helpers used by the explorer
+    # ---------------------------------------------------------------------- #
     @staticmethod
     def path_to_world(grid, path_rc):
+        """Convert a list of (row, col) grid cells to world (x, y) points.
+
+        Returns a list of (x, y) tuples (cell centres in metres).
+        """
         return [grid.grid_to_world(c, r) for (r, c) in path_rc]
 
     @staticmethod
     def path_blocked(path_rc, blocked):
+        """True if ANY cell in the planned path has become blocked.
+
+        Used to detect when a previously planned path has been
+        invalidated by new obstacle observations.
+        """
         return any(blocked[r, c] for (r, c) in path_rc)
