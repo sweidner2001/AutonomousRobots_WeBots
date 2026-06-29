@@ -179,18 +179,21 @@ class OccupancyGrid:
 
             # Determine whether this ray actually hit an obstacle.
             hit = True
-            if not np.isfinite(rng) or rng >= max_range:
-                # Ray returned inf OR was beyond our usable range.
-                # Treat as a free-space ray up to max_range (no hit at end).
-                rng = max_range
-                hit = False
+            if not np.isfinite(rng):
+                # Ray returned inf: the beam hit nothing within sensor range.
+                # We have NO information from this ray — skipping it avoids
+                # falsely marking cells as free through walls that the lidar
+                # beam happened to pass through without reflecting back.
+                continue
+            elif rng >= max_range:
+                # Ray is beyond our usable range: skip (same reasoning).
+                continue
             elif rng < C.LIDAR_MIN_RANGE:
                 # Too close to be reliable (sensor blind zone); skip entirely.
                 continue
-            else:
-                rng = min(rng, max_range)
-                if rng >= max_range:
-                    hit = False
+            # Clamp to usable range (should never exceed max_range here,
+            # but guard against floating-point edge cases).
+            rng = min(rng, max_range)
 
             # Compute the end point of this ray in the world frame.
             ex = sx + rng * cos_a[i]
@@ -223,15 +226,11 @@ class OccupancyGrid:
                 self.log[r, c] = max(self.log[r, c] + C.L_FREE, -C.L_CLAMP)
                 self.observed[r, c] = True
 
-        # Update the end cell.
+        # Update the end cell — always a confirmed hit (inf and max-range rays
+        # are skipped in integrate_scan before _ray is called).
         c, r = cells[-1]
         if self.in_bounds(c, r):
-            if hit:
-                # Ray hit something here: add L_OCC (more likely occupied).
-                self.log[r, c] = min(self.log[r, c] + C.L_OCC, C.L_CLAMP)
-            else:
-                # Ray reached max range without hitting: mark as free.
-                self.log[r, c] = max(self.log[r, c] + C.L_FREE, -C.L_CLAMP)
+            self.log[r, c] = min(self.log[r, c] + C.L_OCC, C.L_CLAMP)
             self.observed[r, c] = True
 
     # ---------------------------------------------------------------------- #
