@@ -312,8 +312,8 @@ class GridWorld:
                 byte_val = slam_bytes[sy * slam_size_pixels + sx]
 
                 # Translate BreezySLAM byte value into our three-state grid.
-                if byte_val == 0:
-                    # BreezySLAM uses 0 for "not yet observed".
+                if byte_val == 127:
+                    # BreezySLAM uses 127 for "not yet observed".
                     self.grid[gy][gx] = self.unknown
                 elif byte_val < 127:
                     # Low value = high obstacle probability → mark occupied.
@@ -321,6 +321,55 @@ class GridWorld:
                 else:
                     # High value = free space the robot can drive through.
                     self.grid[gy][gx] = self.free
+
+
+    def render(self, robot_gx=None, robot_gy=None, path=None, scale=1):
+        """Return a colour BGR image (numpy array) of the current occupancy grid.
+
+        Colours:
+            Gray  (128,128,128) : unknown cell — never observed.
+            White (255,255,255) : free cell    — laser ray passed through.
+            Black (  0,  0,  0) : occupied     — wall or obstacle.
+            Orange(255,165,  0) : planned path waypoints.
+            Red   (  0,  0,255) : robot position marker.
+
+        Parameters
+        ----------
+        robot_gx, robot_gy : int or None — grid cell of the robot.
+        path               : list of (gx, gy) tuples or None.
+        scale              : int — pixel multiplier (1 = one pixel per cell).
+
+        Returns
+        -------
+        numpy.ndarray of shape (height*scale, width*scale, 3), dtype=uint8.
+        """
+        # Build base image from grid values using vectorised numpy.
+        arr = np.array(self.grid, dtype=np.int8)   # shape (height, width)
+        img = np.full((self.height, self.width, 3), 128, dtype=np.uint8)  # default: unknown gray
+        img[arr == self.free] = (255, 255, 255)  # free  → white
+        img[arr == self.occ]  = (0,   0,   0)   # occ   → black
+
+        # Draw path waypoints in orange.
+        if path:
+            for px, py in path:
+                if 0 <= px < self.width and 0 <= py < self.height:
+                    img[py, px] = (0, 165, 255)   # BGR orange
+
+        # Draw robot as a small red square.
+        if robot_gx is not None and robot_gy is not None:
+            r = max(2, self.width // 150)
+            y1 = max(0, robot_gy - r);  y2 = min(self.height, robot_gy + r + 1)
+            x1 = max(0, robot_gx - r);  x2 = min(self.width,  robot_gx + r + 1)
+            img[y1:y2, x1:x2] = (0, 0, 255)     # BGR red
+
+        # Upscale if requested.
+        if scale > 1:
+            img = cv2.resize(
+                img,
+                (self.width * scale, self.height * scale),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        return img
 
 
 
