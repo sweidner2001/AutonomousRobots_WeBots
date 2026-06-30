@@ -71,7 +71,7 @@ from Maze4.controllers.Controller_v1.occupancy_grid import OccupancyGrid
 from Maze4.controllers.Controller_v1.odometry       import Odometry
 from Maze4.controllers.Controller_v1.frontier       import FrontierDetector
 from Maze4.controllers.Controller_v1.planner        import PathPlanner
-from Maze4.controllers.Controller_v1.pilot          import Pilot
+from Maze4.controllers.Controller_v1.pilot_2          import Pilot
 from Maze4.controllers.Controller_v1.mapviz         import MapViz
 from Maze4.controllers.Controller_v1.mission        import Mission
 

@@ -149,8 +149,8 @@ UNKNOWN_TRAVERSAL_COST = 1.6  # A* cost multiplier for crossing unknown cells.
 
 
 CORNER_SCAN_STEPS = 12   
-CORNER_ANGLE_THRESHOLD = 0.35  # rad.  
-CORNER_MIN_SPEED_FACTOR = 0.5  # When the robot is turning a sharp corner, reduce the
+CORNER_ANGLE_THRESHOLD = 0.45  # rad. 35  =  20° — good default
+CORNER_MIN_SPEED_FACTOR = 0.2  # When the robot is turning a sharp corner, reduce the
 							   # forward speed to this fraction of CRUISE_SPEED.
 
 # ===========================================================================

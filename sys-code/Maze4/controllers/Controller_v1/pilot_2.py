@@ -237,7 +237,7 @@ class Pilot:
         v = C.CRUISE_SPEED * align
 
         # Predictive corner braking: slow down BEFORE a sharp bend is reached.
-        v = v * self._corner_speed_factor(x, y)
+        # v = v * self._corner_speed_factor(x, y)
 
         # Reactive wall braking: slow down when a wall is close ahead.
         v = v * self._front_speed_factor(scan_ranges, scan_bearings)
