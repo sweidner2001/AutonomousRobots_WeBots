@@ -116,8 +116,9 @@ P_FREE_THRESH = 0.35  # A cell with p <= 0.35 is treated as "free".
 # Frontiers mark the edges of explored space — driving toward them reveals
 # new areas.
 
-FRONTIER_MIN_CELLS = 4   # Ignore frontier clusters smaller than 4 cells.
-                          # Tiny clusters are usually sensor noise.
+FRONTIER_MIN_CELLS = 2   # Ignore frontier clusters smaller than 2 cells.
+                          # Maze corridor openings are often only 1-2 cells wide,
+                          # so a threshold of 4 would filter them out entirely.
 
 FRONTIER_REACH_TOL = 0.18  # m.  If the robot is within this distance of the
                              # frontier target, it counts as "arrived".

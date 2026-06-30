@@ -22,7 +22,7 @@ import numpy as np
 
 from controller import Robot as WebotsRobot
 
-import Maze4.controllers.Controller_v1.config as C
+import Maze5.controllers.Controller_v1.config as C
 
 
 class Robot:
@@ -72,9 +72,6 @@ class Robot:
         for s in (self.fl_enc, self.fr_enc, self.rl_enc, self.rr_enc):
             s.enable(self.timestep)
 
-        # IMU (InertialUnit) gives an absolute heading, used for odometry.
-        self.imu = self.robot.getDevice("imu inertial_unit")
-        self.imu.enable(self.timestep)
 
         # RGB-D camera (Astra) -- initialised now, used later by the colour
         # mission (SEARCH_BLUE / SEARCH_YELLOW). Not read during exploration.
@@ -90,26 +87,8 @@ class Robot:
         self.lidar_fov = self.lidar.getFov()
         self.lidar_max = self.lidar.getMaxRange()
 
-    def _compute_bearings(self):
-        """Per-ray bearing in the robot frame (rad).
 
-        Webots orders the range image from +FoV/2 to -FoV/2.
-        """
-        n = self.lidar_resolution
-        fov = self.lidar_fov
-        i = np.arange(n)
-        bearings = (fov / 2.0) - (i + 0.5) * (fov / n)
-        return C.LIDAR_ANGLE_SIGN * bearings + C.LIDAR_ANGLE_OFFSET
 
-    # ------------------------------------------------------------------ #
-    # Simulation stepping
-    # ------------------------------------------------------------------ #
-    def step(self):
-        """Advance one tick. Returns False when Webots asks us to quit."""
-        return self.robot.step(self.timestep) != -1
-
-    def get_time(self):
-        return self.robot.getTime()
 
     # ------------------------------------------------------------------ #
     # Sensors
@@ -127,9 +106,6 @@ class Robot:
             "rr": self.rr_enc.getValue(),
         }
 
-    def read_yaw(self):
-        """IMU heading (rad), rotation about the world up-axis."""
-        return self.imu.getRollPitchYaw()[2]
 
     # ------------------------------------------------------------------ #
     # Actuation

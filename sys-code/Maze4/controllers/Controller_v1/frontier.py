@@ -64,14 +64,26 @@ class FrontierDetector:
     def detect_cells(self, grid):
         """Return a boolean mask of all frontier cells.
 
-        A cell is a frontier if it is FREE and has at least one
-        UP/DOWN/LEFT/RIGHT unknown neighbour (4-connectivity check only
-        for adjacency, to avoid marking diagonal-only contacts).
+        A frontier cell is any cell that:
+          1. Has been OBSERVED at least once by the lidar (not completely unknown), AND
+          2. Is NOT an occupied wall cell, AND
+          3. Has at least one UP/DOWN/LEFT/RIGHT neighbour that is UNKNOWN.
 
-        Uses NumPy array SHIFTS instead of loops for speed:
-          shift up by 1    -> each cell sees the content of the cell below it
-          shift down by 1  -> each cell sees the content of the cell above it
-          etc.
+        WHY "OBSERVED" INSTEAD OF "FREE" (p <= P_FREE_THRESH)?
+        --------------------------------------------------------
+        The strict free threshold (P_FREE_THRESH = 0.35) requires 2+ lidar
+        passes through a cell.  Boundary cells near corridor openings often
+        only receive 1 pass and land at prob ≈ 0.41 — observed but not yet
+        "fully" free.  Using the strict threshold would miss exactly these
+        edge cells and produce zero frontiers even when unexplored corridors
+        are right next to the robot.
+
+        Instead we use: observed AND NOT wall.
+          - "observed"  = grid.observed flag is True  (any lidar touch counts)
+          - "not wall"  = prob < P_OCC_THRESH          (not a confirmed obstacle)
+
+        This correctly captures every cell the lidar has seen that is not a
+        wall, which is exactly where the robot can stand.
 
         Args:
             grid (OccupancyGrid): the current map.
@@ -79,8 +91,9 @@ class FrontierDetector:
         Returns:
             np.ndarray(bool): same shape as the grid, True at frontier cells.
         """
-        free    = grid.free_mask()     # True where p <= P_FREE_THRESH
-        unknown = grid.unknown_mask()  # True where never observed
+        # "navigable" = seen by lidar at least once AND not a wall
+        navigable = grid.observed & (grid.prob() < C.P_OCC_THRESH)
+        unknown   = grid.unknown_mask()   # True where never observed
 
         # For each cell, check whether any of its 4 axis-aligned neighbours
         # is unknown.  We do this by SHIFTING the unknown array in each
@@ -98,8 +111,8 @@ class FrontierDetector:
 
         neighbour_unknown = up | down | left | right  # any adjacent unknown?
 
-        # A frontier cell must be both free AND next to an unknown cell.
-        return free & neighbour_unknown
+        # A frontier cell must be navigable AND next to an unknown cell.
+        return navigable & neighbour_unknown
 
     # ---------------------------------------------------------------------- #
     def has_frontiers(self, grid):

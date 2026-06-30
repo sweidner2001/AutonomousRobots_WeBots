@@ -229,6 +229,7 @@ class Explorer:
 
         # Detect all frontier cells in the current map.
         fmask = self.frontier.detect_cells(self.grid)
+        n_frontier_cells = int(fmask.sum())
         if not fmask.any():
             # No frontier cells at all -> the entire reachable area is explored.
             print("[explorer] no frontiers left -> exploration complete.")
@@ -238,6 +239,8 @@ class Explorer:
 
         # Group frontier cells into clusters.
         clusters = self.frontier.cluster(fmask)
+        print("[explorer] PLAN: %d frontier cells -> %d clusters, robot=(%.2f,%.2f)"
+              % (n_frontier_cells, len(clusters), pose[0], pose[1]))
 
         # Filter out blacklisted clusters (ones we failed to reach before).
         reachable = [cl for cl in clusters
@@ -256,7 +259,9 @@ class Explorer:
         if path_rc is None or target is None:
             # No path found to any frontier (may be temporarily blocked).
             self._fail_count += 1
-            print("[explorer] no reachable frontier (fail %d/6)." % self._fail_count)
+            print("[explorer] no reachable frontier (fail %d/6) — "
+                  "%d clusters tried, robot=(%.2f,%.2f)."
+                  % (self._fail_count, len(reachable), pose[0], pose[1]))
             if self._fail_count >= 6:
                 print("[explorer] too many failures -> exploration done.")
                 self.phase    = self.DONE

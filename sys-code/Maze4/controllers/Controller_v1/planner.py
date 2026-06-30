@@ -302,7 +302,7 @@ class PathPlanner:
             path = self.astar(blocked, unknown, start_rc, goal_rc)
             tried += 1
             if path is None:
-                if tried > 12:
+                if tried > 30:
                     break  # tried enough; no reachable frontier found
                 continue
 
