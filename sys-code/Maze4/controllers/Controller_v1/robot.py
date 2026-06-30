@@ -71,6 +71,7 @@ class Robot:
 
         self._init_devices()                  # get handles + enable sensors
         self.bearings = self._compute_bearings()  # precompute ray angles once
+        self.previous_v = 0.0                   # last commanded forward speed (m/s)
 
     # ---------------------------------------------------------------------- #
     # Device initialisation
@@ -266,6 +267,9 @@ class Robot:
         self.front_right_motor.setVelocity(right_rad_s)
         self.rear_right_motor.setVelocity(right_rad_s)
 
+        self.previous_v = v
+
     def stop(self):
         """Set all motors to zero — robot stands still."""
         self.set_velocity(0.0, 0.0)
+        self.previous_v = 0.0

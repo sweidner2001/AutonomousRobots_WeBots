@@ -140,7 +140,7 @@ class Explorer:
     # ---------------------------------------------------------------------- #
     # Main dispatch
     # ---------------------------------------------------------------------- #
-    def update(self, pose, ranges, bearings, now):
+    def update(self, pose, ranges, bearings, now, scan_similarity=1.0, previous_speed_command=0.0):
         """Return (v, w) wheel command for this control step.
 
         Called once per simulation step by MazeExplorer._act().
@@ -159,7 +159,7 @@ class Explorer:
         if self.phase == self.PLAN:
             return self._plan(pose, now)
         if self.phase == self.DRIVE:
-            return self._drive(pose, ranges, bearings, now)
+            return self._drive(pose, ranges, bearings, now, scan_similarity, previous_speed_command)
         if self.phase == self.REVERSE:
             return self._reverse(pose, now)
         return 0.0, 0.0   # DONE: stand still
@@ -294,7 +294,7 @@ class Explorer:
     # ---------------------------------------------------------------------- #
     # DRIVE phase
     # ---------------------------------------------------------------------- #
-    def _drive(self, pose, ranges, bearings, now):
+    def _drive(self, pose, ranges, bearings, now, scan_similarity=0.0, previous_speed_command=0.0):
         """Follow the current path and detect when replanning is needed.
 
         Delegates actual steering to pilot.compute().
@@ -305,6 +305,7 @@ class Explorer:
           d) Robot has not moved enough for too long (stuck).
         """
         # Ask the pilot for the next (v, w) command.
+        stuck = False
         v, w, done = self.pilot.compute(pose, ranges, bearings)
 
         # Check if the robot is close enough to the frontier target
@@ -341,14 +342,17 @@ class Explorer:
             pose[0] - self._last_progress_xy[0],
             pose[1] - self._last_progress_xy[1]
         )
-        if moved > C.STUCK_DIST:
+        if scan_similarity > 0.995 and previous_speed_command > 0.1:
+            # scans are almost identical → robot hasn't moved
+            print("[explorer] scan similarity %.3f → robot is stuck!" % scan_similarity)
+            stuck = True
+        if moved > C.STUCK_DIST and stuck is False:
             # Robot is making progress -- update the reference point.
             self._last_progress_xy   = (pose[0], pose[1])
             self._last_progress_time = now
         elif (now - self._last_progress_time) > C.STUCK_TIME:
             # Robot hasn't moved far enough in STUCK_TIME seconds -> stuck.
-            print("[explorer] stuck at (%.2f, %.2f) -> backing up."
-                  % (pose[0], pose[1]))
+            print("[explorer] stuck at (%.2f, %.2f) -> backing up. Scan similarity: %.3f" % (pose[0], pose[1], scan_similarity))
             # Blacklist the current frontier so we don't loop back to it.
             if self._current_target_centroid is not None:
                 self._blacklisted.add(self._current_target_centroid)
@@ -426,6 +430,7 @@ class MazeExplorer:
         self.now      = 0.0        # current simulation time (seconds)
         self.pose     = (0.0, 0.0, 0.0)  # (x, y, theta) from odometry
         self.ranges   = None       # latest lidar scan
+        self.previous_ranges   = None       # previous lidar scan
 
         self._saved   = False      # prevent saving the map more than once
         self.out_dir  = os.path.dirname(os.path.abspath(__file__))
@@ -491,6 +496,7 @@ class MazeExplorer:
         self.pose    = self.odom.update(
             self.robot.read_encoders(), self.robot.read_yaw()
         )
+        self.previous_ranges = self.ranges
         self.ranges  = self.robot.read_lidar()
 
         # Fuse the lidar scan into the map (not every single step to save CPU).
@@ -499,6 +505,33 @@ class MazeExplorer:
                 self.pose[0], self.pose[1], self.pose[2],
                 self.ranges, self.robot.bearings
             )
+
+    def get_scan_similarity_to_previous(self):
+        """Compute the similarity between the current and previous lidar scans.
+
+        Returns:
+            similarity : float in [-1, 1].  Values near 1.0 mean the scan
+            is almost identical to the last one (robot likely not moving).
+        """
+        if self.previous_ranges is None or self.ranges is None:
+            return 1.0
+
+        prev = np.asarray(self.previous_ranges, dtype=np.float32)
+        curr = np.asarray(self.ranges,          dtype=np.float32)
+
+        # Replace inf (no-return rays) with lidar_max.
+        # inf means "beam reached the sensor's physical limit without hitting
+        # anything" -- lidar_max is the correct semantic value and keeps the
+        # array the same shape for corrcoef.
+        lidar_max = float(self.robot.lidar_max)
+        prev = np.where(np.isfinite(prev), prev, lidar_max + 1)
+        curr = np.where(np.isfinite(curr), curr, lidar_max + 1)
+
+        if prev.std() < 1e-9 or curr.std() < 1e-9:   # zero-variance -> undefined
+            return 1.0
+
+        return float(np.corrcoef(prev, curr)[0, 1])
+    
 
     # ---------------------------------------------------------------------- #
     # Per-step action
@@ -513,7 +546,9 @@ class MazeExplorer:
         """
         if self.mission == Mission.EXPLORE_MAP:
             v, w = self.explorer.update(
-                self.pose, self.ranges, self.robot.bearings, self.now
+                self.pose, self.ranges, self.robot.bearings, self.now, 
+                # scan_similarity=self.get_scan_similarity_to_previous(), 
+                # previous_speed_command=self.robot.previous_v
             )
             self.robot.set_velocity(v, w)
             if self.explorer.finished:
