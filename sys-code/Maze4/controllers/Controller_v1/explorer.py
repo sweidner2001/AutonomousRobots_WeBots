@@ -212,91 +212,84 @@ class Explorer:
     def _plan(self, pose, now):
         """Detect frontiers, choose the best one, plan an A* path to it.
 
-        Steps:
-          1. Build the inflated obstacle map (blocked) and unknown mask.
-          2. Find all frontier cells (free cells adjacent to unknown).
-          3. Cluster them into groups.
-          4. Filter out blacklisted clusters.
-          5. Run A* to pick the best reachable cluster (nearest + largest).
-          6. Hand the path to the Pilot and switch to DRIVE phase.
-
-        If no reachable frontier is found, we count the failure and
-        either rotate in place (to gather new data) or declare DONE.
+        PIPELINE (4 steps):
+          1. build_nav_grid  -- flood fill reachable area + inflate obstacles.
+                                Produces a 3-value grid: 1.0=free, 0.5=unknown, 0.0=blocked.
+          2. detect_cells    -- frontier = reachable cell with an unexplored neighbour.
+          3. cluster         -- group adjacent frontier cells, filter tiny ones.
+          4. choose_target   -- A* to nearest/largest frontier; give path to Pilot.
         """
-        # Build the cost layers used by A*.
-        blocked, unknown = self.planner.build_cost_layers(self.grid)
-        self._blocked_cache = blocked   # cache for DRIVE phase path-check
+        # --- Step 1: navigation grid -----------------------------------------
+        # Flood fill from the robot through observed, non-blocked cells.
+        # Also inflates obstacles by INFLATE_RADIUS_CELLS for safety.
+        nav, reachable, blocked = self.planner.build_nav_grid(
+            self.grid, (pose[0], pose[1])
+        )
+        self._blocked_cache = blocked   # used in DRIVE phase to detect path blockage
 
-        # Detect all frontier cells in the current map.
-        fmask = self.frontier.detect_cells(self.grid)
-        n_frontier_cells = int(fmask.sum())
+        # --- Step 2: frontier detection ---------------------------------------
+        # A frontier is any reachable cell adjacent to an unexplored cell (nav=0.5).
+        fmask = self.frontier.detect_cells(nav, reachable)
         if not fmask.any():
-            # No frontier cells at all -> the entire reachable area is explored.
-            print("[explorer] no frontiers left -> exploration complete.")
+            print("[explorer] no frontiers -> exploration complete.")
             self.phase    = self.DONE
             self.finished = True
             return 0.0, 0.0
 
-        # Group frontier cells into clusters.
+        # --- Step 3: clustering ----------------------------------------------
         clusters = self.frontier.cluster(fmask)
         print("[explorer] PLAN: %d frontier cells -> %d clusters, robot=(%.2f,%.2f)"
-              % (n_frontier_cells, len(clusters), pose[0], pose[1]))
+              % (int(fmask.sum()), len(clusters), pose[0], pose[1]))
 
-        # Filter out blacklisted clusters (ones we failed to reach before).
-        reachable = [cl for cl in clusters
-                     if cl["centroid"] not in self._blacklisted]
-        if not reachable:
-            # All clusters blacklisted -- clear the list and retry.
+        # Skip clusters whose centroid was previously blacklisted as unreachable.
+        candidates = [cl for cl in clusters
+                      if cl["centroid"] not in self._blacklisted]
+        if not candidates:
             print("[explorer] all frontiers blacklisted -> clearing blacklist.")
             self._blacklisted.clear()
-            reachable = clusters
+            candidates = clusters
 
-        # Ask the planner to choose the best reachable frontier.
+        # --- Step 4: A* path planning ----------------------------------------
+        # unknown mask: cells with nav=0.5 cost more to cross (exploration penalty).
+        unknown = (nav == 0.5)
         path_rc, target = self.planner.choose_target(
-            self.grid, reachable, (pose[0], pose[1]), blocked, unknown
+            self.grid, candidates, (pose[0], pose[1]), blocked, unknown
         )
 
         if path_rc is None or target is None:
-            # No path found to any frontier (may be temporarily blocked).
             self._fail_count += 1
             print("[explorer] no reachable frontier (fail %d/6) — "
-                  "%d clusters tried, robot=(%.2f,%.2f)."
-                  % (self._fail_count, len(reachable), pose[0], pose[1]))
+                  "%d clusters, robot=(%.2f,%.2f)."
+                  % (self._fail_count, len(candidates), pose[0], pose[1]))
             if self._fail_count >= 6:
                 print("[explorer] too many failures -> exploration done.")
                 self.phase    = self.DONE
                 self.finished = True
                 return 0.0, 0.0
-            # Nudge the robot to a slightly different position so the lidar
-            # might see new cells and open up a new path.
+            # Spin slightly so the lidar sees new cells and may open a path.
             return 0.0, C.MAX_TURN_SPEED * 0.5
 
-        # SUCCESS: we have a valid path.
+        # --- SUCCESS: path found ---------------------------------------------
         self._fail_count = 0
         self._plan_count += 1
         if self._plan_count >= C.BLACKLIST_CLEAR:
-            # Periodically clear the blacklist so stale entries don't
-            # permanently block valid targets that the map has updated around.
             self._blacklisted.clear()
             self._plan_count = 0
 
-        # Store path data (shared with the visualiser).
+        # Store path data (also read by the visualiser).
         self._path_rc   = path_rc
         self.world_path = self.planner.path_to_world(self.grid, path_rc)
         gr, gc          = target["centroid"]
         self.target_xy  = self.grid.grid_to_world(gc, gr)
         self._current_target_centroid = target["centroid"]
 
-        # Give the path to the Pilot.
         self.pilot.set_path(self.world_path)
-
-        # Record timing and starting position for stuck detection.
         self._last_plan_time     = now
         self._last_progress_xy   = (pose[0], pose[1])
         self._last_progress_time = now
 
         self.phase = self.DRIVE
-        return 0.0, 0.0   # stand still for this one step while transitioning
+        return 0.0, 0.0
 
     # ---------------------------------------------------------------------- #
     # DRIVE phase

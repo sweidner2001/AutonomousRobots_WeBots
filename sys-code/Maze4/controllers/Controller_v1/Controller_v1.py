@@ -56,17 +56,15 @@ import sys
 # It imports all implementation modules from Maze4.
 from Maze4.controllers.Controller_v1.explorer import MazeExplorer
 
-def _debug_show(self, navigable, unknown, frontier_mask):
+def debug_show(navigable, unknown):
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    for ax, data, title in zip(axes,
-            [navigable, unknown, frontier_mask],
-            ["navigable", "unknown", "frontiers"]):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    for ax, data, title in zip(axes, [navigable, unknown], ["navigable", "unknown"]):
         ax.imshow(data, cmap="gray", origin="lower", interpolation="nearest")
         ax.set_title(title)
     plt.tight_layout()
     plt.pause(0.001)
-    
+
 
 def main():
     """Create the explorer and run the simulation loop."""

@@ -61,63 +61,61 @@ class FrontierDetector:
                (1,  -1),  (1, 0),  (1,  1)]
 
     # ---------------------------------------------------------------------- #
-    def detect_cells(self, grid):
+    def detect_cells(self, nav, reachable):
         """Return a boolean mask of all frontier cells.
 
-        A frontier cell is any cell that:
-          1. Has been OBSERVED at least once by the lidar (not completely unknown), AND
-          2. Is NOT an occupied wall cell, AND
-          3. Has at least one UP/DOWN/LEFT/RIGHT neighbour that is UNKNOWN.
+        Uses the 3-value navigation grid from PathPlanner.build_nav_grid().
 
-        WHY "OBSERVED" INSTEAD OF "FREE" (p <= P_FREE_THRESH)?
-        --------------------------------------------------------
-        The strict free threshold (P_FREE_THRESH = 0.35) requires 2+ lidar
-        passes through a cell.  Boundary cells near corridor openings often
-        only receive 1 pass and land at prob ≈ 0.41 — observed but not yet
-        "fully" free.  Using the strict threshold would miss exactly these
-        edge cells and produce zero frontiers even when unexplored corridors
-        are right next to the robot.
+        A frontier cell is simply:
+          - IN the reachable flood-fill area (reachable == True), AND
+          - HAS AT LEAST ONE 4-connected neighbour that is UNEXPLORED (nav == 0.5)
 
-        Instead we use: observed AND NOT wall.
-          - "observed"  = grid.observed flag is True  (any lidar touch counts)
-          - "not wall"  = prob < P_OCC_THRESH          (not a confirmed obstacle)
+        WHY THIS IS CLEAN AND ROBUST
+        --------------------------------
+        No raw probability thresholds are needed here.  The nav grid encodes
+        all the information this function needs:
 
-        This correctly captures every cell the lidar has seen that is not a
-        wall, which is exactly where the robot can stand.
+          nav == 1.0  ->  reachable free space (the robot can stand here)
+          nav == 0.5  ->  unexplored  (lidar has never touched this cell)
+          nav == 0.0  ->  blocked     (wall or inflation safety buffer)
+
+        The frontier is precisely the boundary between the reachable area
+        (1.0) and unexplored space (0.5).  Driving toward any frontier cell
+        will reveal new area beyond it.
+
+        The flood fill in build_nav_grid() also removes "orphan" free islands
+        — cells that look free but can only be reached by crossing walls.
+        So every frontier returned here is actually reachable by the robot.
 
         Args:
-            grid (OccupancyGrid): the current map.
+            nav      : float32 array (1.0 / 0.5 / 0.0) from build_nav_grid().
+            reachable: bool mask, True at cells the robot can reach.
 
         Returns:
-            np.ndarray(bool): same shape as the grid, True at frontier cells.
+            np.ndarray bool -- True at every frontier cell.
         """
-        # "navigable" = seen by lidar at least once AND not a wall
-        navigable = grid.observed & (grid.prob() < C.P_OCC_THRESH)
-        unknown   = grid.unknown_mask()   # True where never observed
+        unexplored = (nav == 0.5)   # cells the lidar has never observed
 
-        # For each cell, check whether any of its 4 axis-aligned neighbours
-        # is unknown.  We do this by SHIFTING the unknown array in each
-        # direction and OR-ing the results together.
-        #
-        # up[i, j] = unknown[i+1, j]  (the cell directly ABOVE row i)
-        up    = np.zeros_like(unknown)
-        down  = np.zeros_like(unknown)
-        left  = np.zeros_like(unknown)
-        right = np.zeros_like(unknown)
-        up  [:-1, :]  = unknown[1:,  :]   # shift unknown one row downward
-        down[1:,  :]  = unknown[:-1, :]   # shift unknown one row upward
-        left[:,  :-1] = unknown[:,  1:]   # shift unknown one col to the right
-        right[:, 1:]  = unknown[:, :-1]   # shift unknown one col to the left
+        # Shift the unexplored mask in each axis-aligned direction to check
+        # whether any 4-connected neighbour of a cell is unexplored.
+        up    = np.zeros_like(unexplored)
+        down  = np.zeros_like(unexplored)
+        left  = np.zeros_like(unexplored)
+        right = np.zeros_like(unexplored)
+        up  [:-1, :]  = unexplored[1:,  :]   # cell above has unexplored?
+        down[1:,  :]  = unexplored[:-1, :]   # cell below has unexplored?
+        left[:,  :-1] = unexplored[:,  1:]   # cell to right has unexplored?
+        right[:, 1:]  = unexplored[:, :-1]   # cell to left  has unexplored?
 
-        neighbour_unknown = up | down | left | right  # any adjacent unknown?
+        neighbour_unexplored = up | down | left | right
 
-        # A frontier cell must be navigable AND next to an unknown cell.
-        return navigable & neighbour_unknown
+        # Frontier = reachable AND at least one unexplored neighbour.
+        return reachable & neighbour_unexplored
 
     # ---------------------------------------------------------------------- #
-    def has_frontiers(self, grid):
+    def has_frontiers(self, nav, reachable):
         """Quick check: True if any frontier cells exist."""
-        return bool(self.detect_cells(grid).any())
+        return bool(self.detect_cells(nav, reachable).any())
 
     # ---------------------------------------------------------------------- #
     def cluster(self, frontier_mask):

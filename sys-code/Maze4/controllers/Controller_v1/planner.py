@@ -63,6 +63,7 @@ Lower cost = better target.
 INFO_GAIN_WEIGHT controls the tradeoff between distance and information gain.
 """
 
+import collections
 import heapq   # Python's built-in min-heap priority queue
 import math
 
@@ -91,20 +92,131 @@ class PathPlanner:
     ]
 
     # ---------------------------------------------------------------------- #
-    # Cost layer construction
+    # Navigation grid  (main entry point for planning)
     # ---------------------------------------------------------------------- #
-    def build_cost_layers(self, grid):
-        """Compute the two binary layers that A* uses.
+    def build_nav_grid(self, grid, robot_xy):
+        """Build a clean 3-value navigation grid: flood fill + obstacle inflation.
+
+        This is the single source of truth for the planner and the frontier
+        detector.  It produces three outputs that together describe the world:
+
+          nav[r,c] = 1.0  ->  reachable FREE space (flood-filled from robot)
+          nav[r,c] = 0.0  ->  BLOCKED (wall or inflation safety margin)
+          nav[r,c] = 0.5  ->  UNEXPLORED (never seen by lidar)
+
+        WHY FLOOD FILL INSTEAD OF JUST THE FREE MASK?
+        -----------------------------------------------
+        The raw occupancy grid can contain "orphan" free cells: areas the
+        lidar saw but the robot can no longer physically reach (surrounded
+        by walls).  Flood fill from the robot discards those automatically.
+        Only the free-space blob that contains the robot gets label 1.0.
+
+        PIPELINE
+        ---------
+          1. Inflate raw wall cells by INFLATE_RADIUS_CELLS (robot safety buffer).
+          2. BFS flood fill from robot position through observed, non-blocked cells.
+          3. Assemble: default 0.5, set 0.0 for blocked, set 1.0 for reachable.
+
+        Args:
+            grid     : OccupancyGrid -- the current probabilistic map.
+            robot_xy : (x, y) world coordinates of the robot (metres).
 
         Returns:
-            blocked (np.ndarray bool): True where the robot CANNOT go
-                (occupied cells + inflation margin around them).
-            unknown (np.ndarray bool): True where the cell has never been
-                observed (used to add the unknown traversal penalty).
+            nav       (np.ndarray float32) -- 3-value grid described above.
+            reachable (np.ndarray bool)    -- True at flood-filled free cells.
+            blocked   (np.ndarray bool)    -- True at inflated obstacle cells.
         """
+        # Step 1: inflate obstacles.
         blocked = self._inflate(grid.occ_mask(), C.INFLATE_RADIUS_CELLS)
-        unknown = grid.unknown_mask()
-        return blocked, unknown
+
+        # Step 2: flood fill reachable free space from the robot's cell.
+        col0, row0 = grid.world_to_grid(*robot_xy)
+        reachable  = self._flood_fill_free(
+            grid.observed, blocked, row0, col0, grid.log.shape
+        )
+
+        # Step 3: assemble the navigation grid.
+        #   Start with everything unexplored (0.5).
+        #   Mark obstacles (0.0) – includes inflated wall cells.
+        #   Mark reachable cells (1.0) – these always "win" over blocked
+        #   because the robot is physically present in reachable space.
+        nav = np.full(grid.log.shape, 0.5, dtype=np.float32)
+        nav[reachable] = 1.0
+        nav[blocked]   = 0.0
+
+        return nav, reachable, blocked
+
+    @staticmethod
+    def _flood_fill_free(observed, blocked, start_r, start_c, shape):
+        """BFS flood fill through observed, non-blocked cells from a start cell.
+
+        Starting at (start_r, start_c) this spreads in all 8 directions,
+        visiting every cell that:
+          - has been observed by the lidar at least once  (observed flag is True)
+          - is not inside the inflated obstacle zone      (blocked flag is False)
+
+        This gives the set of cells the robot can PHYSICALLY REACH from its
+        current position given what the map currently knows.
+
+        If the robot's own cell is inside the inflation zone (e.g., the robot
+        is very close to a wall), we search outward up to 8 cells to find the
+        nearest valid start cell before flooding.
+
+        Args:
+            observed         : bool array, True where lidar has touched a cell.
+            blocked          : bool array, True where the robot cannot go.
+            start_r, start_c : robot's grid cell (row, col).
+            shape            : (nrows, ncols) of the grid.
+
+        Returns:
+            np.ndarray bool -- True at every cell reachable from the start.
+        """
+        nrows, ncols = shape
+        reachable    = np.zeros((nrows, ncols), dtype=bool)
+
+        # Clamp starting cell to grid bounds.
+        start_r = max(0, min(nrows - 1, start_r))
+        start_c = max(0, min(ncols - 1, start_c))
+
+        # If the robot's cell is blocked or unobserved, search outward for
+        # a better seed cell (Chebyshev spiral search, same as _nearest_free).
+        if blocked[start_r, start_c] or not observed[start_r, start_c]:
+            found = False
+            for rad in range(1, 9):
+                for dr in range(-rad, rad + 1):
+                    for dc in range(-rad, rad + 1):
+                        if max(abs(dr), abs(dc)) != rad:
+                            continue
+                        r, c = start_r + dr, start_c + dc
+                        if (0 <= r < nrows and 0 <= c < ncols
+                                and not blocked[r, c] and observed[r, c]):
+                            start_r, start_c = r, c
+                            found = True
+                            break
+                    if found:
+                        break
+                if found:
+                    break
+            if not found:
+                return reachable   # robot completely boxed in
+
+        # BFS: spread to all 8-connected observed, non-blocked neighbours.
+        DIRS = [(-1,0),(1,0),(0,-1),(0,1), (-1,-1),(-1,1),(1,-1),(1,1)]
+        queue = collections.deque([(start_r, start_c)])
+        reachable[start_r, start_c] = True
+
+        while queue:
+            r, c = queue.popleft()
+            for dr, dc in DIRS:
+                rr, cc = r + dr, c + dc
+                if (0 <= rr < nrows and 0 <= cc < ncols
+                        and not reachable[rr, cc]
+                        and not blocked[rr, cc]
+                        and observed[rr, cc]):
+                    reachable[rr, cc] = True
+                    queue.append((rr, cc))
+
+        return reachable
 
     @staticmethod
     def _inflate(occ_mask, radius_cells):
@@ -123,8 +235,10 @@ class PathPlanner:
         """
         if radius_cells <= 0:
             return occ_mask.copy()
-        struct = np.ones((3, 3), dtype=bool)  # 8-connected structuring element
-        return binary_dilation(occ_mask, structure=struct, iterations=radius_cells)
+        # struct = np.ones((3, 3), dtype=bool)  # 8-connected structuring element
+        struct = np.ones((1 + 2*radius_cells, 1 + 2*radius_cells), dtype=bool)  # 8-connected structuring element
+        # return binary_dilation(occ_mask, structure=struct, iterations=radius_cells)
+        return binary_dilation(occ_mask, structure=struct, iterations=1)
 
     # ---------------------------------------------------------------------- #
     # A* path search

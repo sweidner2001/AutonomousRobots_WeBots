@@ -38,7 +38,7 @@ WHEEL_RADIUS   = 0.043   # Radius of each wheel in metres.
 WHEEL_BASE     = 0.22    # Distance between the left and right wheel centres
                           # in metres.  Used for skid-steer speed calculation.
 
-ROBOT_RADIUS   = 0.13    # Approximate radius of the robot body in metres.
+ROBOT_RADIUS   = 0.12    # Approximate radius of the robot body in metres.
                           # Used to "inflate" walls on the map so the robot
                           # keeps a safe gap and doesn't clip corners.
 
@@ -140,7 +140,7 @@ BLACKLIST_CLEAR = 8      # After this many successful frontier plans, clear the
 # running A*.  This keeps the planned path away from walls by at least
 # ROBOT_RADIUS metres, preventing collisions at corners.
 INFLATE_RADIUS_CELLS = max(1, int(round(ROBOT_RADIUS / GRID_RESOLUTION)))
-# = max(1, round(0.13 / 0.05)) = max(1, 3) = 3 cells = 0.15 m clearance
+# = max(1, round(0.12 / 0.05)) = max(1, 2) = 2 cells = 0.10 m clearance
 
 UNKNOWN_TRAVERSAL_COST = 1.6  # A* cost multiplier for crossing unknown cells.
                                 # The robot prefers known-free routes, but
@@ -172,7 +172,7 @@ WAYPOINT_TOL   = 0.12   # m  A waypoint is considered "reached" when the
 SLOW_FRONT_DIST = 0.55  # m  Start reducing forward speed when the nearest
                           # front obstacle is closer than this.
 
-SAFE_FRONT_DIST = 0.30  # m  If anything is closer than this in the front
+SAFE_FRONT_DIST = 0.10  # m  If anything is closer than this in the front
                           # sector, stop and rotate away from the obstacle.
 
 FRONT_SECTOR   = 0.52   # rad  Half-width of the "front" danger zone.
