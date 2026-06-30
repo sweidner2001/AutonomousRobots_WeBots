@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"C:\\\\Users\\\\sebas\\\\OneDrive\\\\OTH\\\\AutonomousRobots\\\\Modularbeit\\\\sys-code\" && echo \"=== Maze4 controller files ===\" && find Maze4/controllers/Controller_v1 -type f -not -path '*__pycache__*' && echo \"\" && echo \"=== top-level sys-code ===\" && ls -la)"
+    ]
+  }
+}
