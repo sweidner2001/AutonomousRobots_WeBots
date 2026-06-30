@@ -79,11 +79,11 @@ LIDAR_ANGLE_OFFSET = 0.0  # rad.  Extra rotation if the lidar is mounted
 #   FREE     -- observed and probably empty.   White in the visualisation.
 #   OCCUPIED -- probably contains a wall.      Black in the visualisation.
 
-GRID_RESOLUTION = 0.05   # m per cell side.  Each cell is a 5 cm x 5 cm square.
+GRID_RESOLUTION = 0.06   # m per cell side.  Each cell is a 5 cm x 5 cm square.
                           # Smaller -> finer map, but more memory and slower.
 
-GRID_WIDTH_M  = 16.0     # Total map width in metres.  With 0.05 m/cell
-GRID_HEIGHT_M = 16.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
+GRID_WIDTH_M  = 15.0     # Total map width in metres.  With 0.05 m/cell
+GRID_HEIGHT_M = 15.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
 
 # Place the grid origin so that world (0,0) falls exactly in the middle.
 GRID_ORIGIN_X = -GRID_WIDTH_M  / 2.0   # world x of grid column 0
@@ -157,7 +157,7 @@ MAX_TURN_SPEED = 1.8    # rad/s  Maximum angular (turning) speed.
 HEADING_KP     = 2.2    # Proportional gain on heading error for pure pursuit.
                           # Increase -> turns more aggressively toward waypoints.
 
-LOOKAHEAD      = 0.28   # m  Pure-pursuit look-ahead distance.
+LOOKAHEAD      = 0.20   # m  Pure-pursuit look-ahead distance.
                           # Larger -> smoother but cuts corners more.
                           # Smaller -> tighter tracking but may oscillate.
 
@@ -172,7 +172,7 @@ WAYPOINT_TOL   = 0.12   # m  A waypoint is considered "reached" when the
 SLOW_FRONT_DIST = 0.55  # m  Start reducing forward speed when the nearest
                           # front obstacle is closer than this.
 
-SAFE_FRONT_DIST = 0.10  # m  If anything is closer than this in the front
+SAFE_FRONT_DIST = 0.12  # m  If anything is closer than this in the front
                           # sector, stop and rotate away from the obstacle.
 
 FRONT_SECTOR   = 0.52   # rad  Half-width of the "front" danger zone.
