@@ -361,7 +361,7 @@ class Explorer:
             self._trigger_replan()            # discard path
             self.phase = self.REVERSE         # override -> backup first
             self._reverse_end_time = now + C.REVERSE_TIME
-            return -C.CRUISE_SPEED * 0.5, 0.0  # first step: reverse
+            return -C.CRUISE_SPEED, 0.0  # first step: reverse
 
         return v, w
 
@@ -391,7 +391,7 @@ class Explorer:
             return 0.0, 0.0
 
         # Drive backward at half cruise speed.
-        return -C.CRUISE_SPEED * 0.5, 0.0
+        return -C.CRUISE_SPEED, 0.0
 
 
 # ============================================================================

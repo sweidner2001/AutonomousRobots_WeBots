@@ -147,6 +147,12 @@ UNKNOWN_TRAVERSAL_COST = 1.6  # A* cost multiplier for crossing unknown cells.
                                 # willingly crosses unknown space to reach
                                 # a frontier (exploration payoff).
 
+
+CORNER_SCAN_STEPS = 12   
+CORNER_ANGLE_THRESHOLD = 0.35  # rad.  
+CORNER_MIN_SPEED_FACTOR = 0.5  # When the robot is turning a sharp corner, reduce the
+							   # forward speed to this fraction of CRUISE_SPEED.
+
 # ===========================================================================
 # Motion control / pilot
 # ===========================================================================
@@ -184,7 +190,7 @@ STUCK_TIME     = 3.0    # s   If the robot moves less than STUCK_DIST in
                           # STUCK_TIME seconds, it is declared stuck and
                           # triggers a backup + replan.
 
-REVERSE_TIME   = 1.2    # s   How long the robot drives backward when stuck.
+REVERSE_TIME   = 2.5    # s   How long the robot drives backward when stuck.
                           # After this it replans to a fresh frontier target.
 
 # ===========================================================================
