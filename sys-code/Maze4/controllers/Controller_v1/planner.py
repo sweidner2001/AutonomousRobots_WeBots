@@ -67,6 +67,7 @@ import heapq   # Python's built-in min-heap priority queue
 import math
 
 import numpy as np
+from scipy.ndimage import binary_dilation
 
 import Maze4.controllers.Controller_v1.config as C
 
@@ -109,9 +110,9 @@ class PathPlanner:
     def _inflate(occ_mask, radius_cells):
         """Expand every True cell outward by `radius_cells` in all 8 directions.
 
-        This is a binary dilation using only NumPy array shifts (no scipy).
-        Each iteration of the loop adds exactly one cell of margin.
-        After `radius_cells` iterations, the margin is `radius_cells` cells wide.
+        Uses scipy binary_dilation with a 3×3 structuring element repeated
+        `radius_cells` times, which is equivalent to growing each occupied
+        cell by exactly one cell per iteration in all 8 directions.
 
         Args:
             occ_mask (np.ndarray bool): raw occupied-cell mask from the grid.
@@ -120,20 +121,10 @@ class PathPlanner:
         Returns:
             np.ndarray bool: inflated obstacle mask.
         """
-        out = occ_mask.copy()
-        for _ in range(radius_cells):
-            s = out.copy()
-            # Spread True cells in all 8 directions by 1 cell.
-            s[:-1, :]  |= out[1:,  :]   # up
-            s[1:,  :]  |= out[:-1, :]   # down
-            s[:,  :-1] |= out[:,  1:]   # left
-            s[:,   1:] |= out[:, :-1]   # right
-            s[:-1, :-1] |= out[1:,   1:]  # up-left
-            s[1:,   1:] |= out[:-1, :-1]  # down-right
-            s[:-1,  1:] |= out[1:,  :-1]  # up-right
-            s[1:,  :-1] |= out[:-1,  1:]  # down-left
-            out = s
-        return out
+        if radius_cells <= 0:
+            return occ_mask.copy()
+        struct = np.ones((3, 3), dtype=bool)  # 8-connected structuring element
+        return binary_dilation(occ_mask, structure=struct, iterations=radius_cells)
 
     # ---------------------------------------------------------------------- #
     # A* path search
