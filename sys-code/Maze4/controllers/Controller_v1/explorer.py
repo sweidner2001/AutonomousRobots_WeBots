@@ -428,7 +428,16 @@ class MazeExplorer:
         self.planner  = PathPlanner()
         self.pilot    = Pilot()
         self.viz      = MapViz(self.grid)
-        self.hazard_detector = FloorHazardDetector()
+        # Camera resolution/FoV/range are all read live from the Webots
+        # device inside Robot.__init__ (see robot.py) -- passed straight
+        # through here rather than duplicated as config.py constants.
+        self.hazard_detector = FloorHazardDetector(
+            self.robot.camera_width,
+            self.robot.camera_height,
+            self.robot.camera_fov,
+            self.robot.camera_depth_min_range,
+            self.robot.camera_depth_max_range,
+        )
         self.explorer = Explorer(
             self.grid, self.frontier, self.planner, self.pilot
         )

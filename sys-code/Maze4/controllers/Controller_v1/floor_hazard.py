@@ -100,14 +100,29 @@ class FloorHazardDetector:
     """Finds green floor-marking pixels in one RGB-D frame and returns their
     world-frame (x, y) positions."""
 
-    def __init__(self):
-        # --- Pinhole intrinsics (identical for the RGB and depth lens: same
-        # resolution and FoV on this camera model) ---------------------------
-        self.width  = C.CAMERA_WIDTH
-        self.height = C.CAMERA_HEIGHT
+    def __init__(self, camera_width, camera_height, camera_fov,
+                 depth_min_range, depth_max_range):
+        """
+        Args:
+            camera_width, camera_height : pixel resolution, from
+                Camera.getWidth()/getHeight() (see robot.py). Identical for
+                the RGB and depth lens on this camera model.
+            camera_fov      : horizontal field of view (rad), from Camera.getFov().
+            depth_min_range : m, from RangeFinder.getMinRange().
+            depth_max_range : m, from RangeFinder.getMaxRange().
+
+        All five of these ARE queried live from the Webots device in
+        robot.py -- they are passed in here rather than duplicated as
+        config.py constants, so there is only one source of truth.
+        """
+        self.width  = camera_width
+        self.height = camera_height
+        self.min_range = depth_min_range
+        self.max_range = depth_max_range
+
         # focal length in pixels, derived from the horizontal FoV:
         #   tan(fov/2) = (width/2) / f   =>   f = (width/2) / tan(fov/2)
-        self.f  = (self.width / 2.0) / math.tan(C.CAMERA_FOV / 2.0)
+        self.f  = (self.width / 2.0) / math.tan(camera_fov / 2.0)
         self.cx = self.width  / 2.0   # principal point (image centre column)
         self.cy = self.height / 2.0   # principal point (image centre row)
 
@@ -149,8 +164,8 @@ class FloorHazardDetector:
         depth = depth_img[vs.astype(np.int32), us.astype(np.int32)]
         valid = (
             np.isfinite(depth)
-            & (depth >= C.CAMERA_MIN_RANGE)
-            & (depth <= C.CAMERA_MAX_RANGE)
+            & (depth >= self.min_range)
+            & (depth <= self.max_range)
         )
         if not np.any(valid):
             return np.empty(0), np.empty(0)

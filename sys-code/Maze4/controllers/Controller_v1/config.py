@@ -231,14 +231,22 @@ SPIN_SEED_TURN = 6.5  # rad  Total rotation during the SPIN_SEED phase
 # many points.  floor_hazard.py fixes this with proper back-projection +
 # reprojection (see that file's module docstring for the full derivation).
 
-# --- Camera intrinsics (from the Astra PROTO used by the Rosbot model) -----
-CAMERA_WIDTH   = 640      # pixels (both RGB and depth image, same resolution)
-CAMERA_HEIGHT  = 480      # pixels
-CAMERA_FOV     = 1.04     # rad, HORIZONTAL field of view (~60°).
-                           # Vertical FOV is derived from this + aspect ratio.
-
-CAMERA_MIN_RANGE = 0.6    # m  Astra depth sensor cannot measure closer than this.
-CAMERA_MAX_RANGE = 8.0    # m  Astra depth sensor max range.
+# NOTE ON WHAT IS / ISN'T READ LIVE FROM THE CAMERA
+# ----------------------------------------------------
+# Resolution, field of view, and depth range ARE queried live from the
+# Webots device (Camera.getWidth()/getHeight()/getFov(),
+# RangeFinder.getMinRange()/getMaxRange() in robot.py) -- no need to
+# duplicate them here as constants.
+#
+# What CANNOT be read live: the camera's MOUNTING POSE (height above the
+# floor, forward/lateral offset, downward tilt) and the physical distance
+# between the RGB and depth lenses.  Webots only exposes 3-D scene-tree
+# transforms (translation/rotation of a device) through the Supervisor
+# API, and this robot uses a plain Robot controller (no `supervisor TRUE`
+# in the world file) -- so there is no getPosition()/getOrientation() call
+# available for a Camera device.  These are therefore physical constants,
+# in the exact same category as WHEEL_RADIUS, WHEEL_BASE, and
+# LIDAR_OFFSET_X above, which are also not queryable and hard-coded here.
 
 # --- Camera mount pose relative to the robot body centre --------------------
 # Best-effort values read from the Rosbot/Astra PROTO files.  If the detected
@@ -256,7 +264,7 @@ CAMERA_TILT_RAD     = 0.0    # rad Downward pitch of the camera. 0 = perfectly
 # HORIZONTALLY (left-right), which is what causes the "slightly different
 # picture" the other student mentioned.  This is used to correctly shift
 # a back-projected depth point into the RGB camera's own frame before
-# sampling colour (see floor_hazard.py: register_depth_to_rgb()).
+# sampling colour (see floor_hazard.py: _sample_registered_rgb()).
 CAMERA_RGB_DEPTH_BASELINE_M = 0.026   # m, horizontal offset between the two lenses.
 
 # --- Green floor detection (HSV threshold) ----------------------------------

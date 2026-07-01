@@ -139,6 +139,11 @@ class Robot:
         self.camera_height = self.camera_rgb.getHeight()
         self.camera_fov    = self.camera_rgb.getFov()   # horizontal FoV, rad
 
+        # Depth range limits, read live from the RangeFinder device itself
+        # (no need to hard-code these -- they come straight from the sensor).
+        self.camera_depth_min_range = self.camera_depth.getMinRange()   # m
+        self.camera_depth_max_range = self.camera_depth.getMaxRange()   # m
+
         # ---- 2-D Lidar (RPLidar A2) --------------------------------------
         # The lidar spins 360° and measures distance to obstacles.
         # We read the raw "range image" — a flat list of distances.
