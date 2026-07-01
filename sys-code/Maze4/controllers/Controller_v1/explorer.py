@@ -76,6 +76,7 @@ from Maze4.controllers.Controller_v1.pilot_2          import Pilot
 from Maze4.controllers.Controller_v1.mapviz         import MapViz
 from Maze4.controllers.Controller_v1.mission        import Mission
 from Maze4.controllers.Controller_v1.floor_hazard   import FloorHazardDetector
+from Maze4.controllers.Controller_v1.colored_objects import ColorObjectDetector, TrackedObject
 
 
 class Explorer:
@@ -438,6 +439,18 @@ class MazeExplorer:
             self.robot.camera_depth_min_range,
             self.robot.camera_depth_max_range,
         )
+        self.color_detector = ColorObjectDetector(
+            self.robot.camera_width,
+            self.robot.camera_height,
+            self.robot.camera_fov,
+            self.robot.camera_depth_min_range,
+            self.robot.camera_depth_max_range,
+        )
+        # One TrackedObject instance per colour -- see colored_objects.py for
+        # what each field (seen / reachable / reached / world_xy) means.
+        self.blue_object   = TrackedObject("blue")
+        self.yellow_object = TrackedObject("yellow")
+
         self.explorer = Explorer(
             self.grid, self.frontier, self.planner, self.pilot
         )
@@ -526,13 +539,29 @@ class MazeExplorer:
                 self.ranges, self.robot.bearings
             )
 
-        # Look for green floor hazards with the RGB-D camera (also not every
-        # step -- back-projecting + registering pixels has a real CPU cost).
+        # Look for green floor hazards AND blue/yellow tracked objects with
+        # the RGB-D camera (also not every step -- back-projecting +
+        # registering pixels has a real CPU cost).  Both detectors reuse the
+        # SAME camera frames -- no need to read the camera twice.
         if self.step_i % C.CAMERA_EVERY == 0:
             rgb_img   = self.robot.read_camera_rgb()
             depth_img = self.robot.read_camera_depth()
+
             xs, ys = self.hazard_detector.detect(rgb_img, depth_img, self.pose)
             self.grid.mark_hazard_world(xs, ys)
+
+            points_by_color = self.color_detector.detect(rgb_img, depth_img, self.pose)
+            for color, obj in (("blue", self.blue_object), ("yellow", self.yellow_object)):
+                oxs, oys = points_by_color[color]
+                self.grid.mark_object_world(color, oxs, oys)
+                obj.update_detection(oxs, oys, self.now)
+
+        # Update "reached" every step -- cheap distance check, no reason to
+        # wait for the next camera frame.
+        for obj in (self.blue_object, self.yellow_object):
+            if obj.update_reached(self.pose[:2]):
+                print("[objects] reached the %s object at (%.2f, %.2f)!"
+                      % (obj.color_name, obj.world_xy[0], obj.world_xy[1]))
 
     def get_scan_similarity_to_previous(self):
         """Compute the similarity between the current and previous lidar scans.
@@ -574,11 +603,20 @@ class MazeExplorer:
         """
         if self.mission == Mission.EXPLORE_MAP:
             v, w = self.explorer.update(
-                self.pose, self.ranges, self.robot.bearings, self.now, 
-                # scan_similarity=self.get_scan_similarity_to_previous(), 
+                self.pose, self.ranges, self.robot.bearings, self.now,
+                # scan_similarity=self.get_scan_similarity_to_previous(),
                 # previous_speed_command=self.robot.previous_v
             )
             self.robot.set_velocity(v, w)
+
+            # Refresh reachability using the flood-fill mask the frontier
+            # planner already computed this PLAN cycle -- a single cell
+            # lookup per object, effectively free (see TrackedObject.update_reachable).
+            reachable = self.explorer._reachable_cache
+            if reachable is not None:
+                self.blue_object.update_reachable(reachable, self.grid)
+                self.yellow_object.update_reachable(reachable, self.grid)
+
             if self.explorer.finished:
                 self._advance_from_explore()
 

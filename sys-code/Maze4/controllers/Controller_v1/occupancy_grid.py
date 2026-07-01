@@ -90,6 +90,14 @@ class OccupancyGrid:
         # the side of never forgetting a detection.
         self.hazard = np.zeros((self.nrows, self.ncols), dtype=bool)
 
+        # Boolean masks: True where the camera has spotted the blue / yellow
+        # target object.  Also sticky, for the same reason as `hazard` above
+        # -- once we know a cell holds a solid object, we never "un-know" it.
+        self.object_masks = {
+            "blue":   np.zeros((self.nrows, self.ncols), dtype=bool),
+            "yellow": np.zeros((self.nrows, self.ncols), dtype=bool),
+        }
+
     # ---------------------------------------------------------------------- #
     # Coordinate conversion helpers
     # ---------------------------------------------------------------------- #
@@ -156,8 +164,22 @@ class OccupancyGrid:
         """
         return self.hazard
 
+    def object_mask(self, color):
+        """Boolean mask: True where the given colour ('blue' or 'yellow')
+        has been detected."""
+        return self.object_masks[color]
+
+    def any_object_mask(self):
+        """Boolean mask: True where EITHER tracked colour has been detected.
+
+        Used by the planner to inflate/block both colours' cells in a
+        single pass -- it doesn't need to distinguish which colour it is,
+        only that the robot cannot drive through it.
+        """
+        return self.object_masks["blue"] | self.object_masks["yellow"]
+
     # ---------------------------------------------------------------------- #
-    # Camera-based hazard marking
+    # Camera-based hazard / object marking
     # ---------------------------------------------------------------------- #
     def mark_hazard_world(self, xs, ys):
         """Flag the grid cells at the given world coordinates as hazards.
@@ -170,6 +192,20 @@ class OccupancyGrid:
             xs, ys : 1-D NumPy arrays of world coordinates (metres).
                      May be empty -- this is a normal "nothing detected" frame.
         """
+        self._mark_world(self.hazard, xs, ys)
+
+    def mark_object_world(self, color, xs, ys):
+        """Flag the grid cells at the given world coordinates as holding the
+        given colour's tracked object.  Same semantics as mark_hazard_world.
+
+        Args:
+            color  : "blue" or "yellow".
+            xs, ys : 1-D NumPy arrays of world coordinates (metres).
+        """
+        self._mark_world(self.object_masks[color], xs, ys)
+
+    def _mark_world(self, mask, xs, ys):
+        """Shared helper: set `mask` to True at the grid cells under (xs, ys)."""
         if len(xs) == 0:
             return
 
@@ -180,7 +216,7 @@ class OccupancyGrid:
             (cols >= 0) & (cols < self.ncols)
             & (rows >= 0) & (rows < self.nrows)
         )
-        self.hazard[rows[in_bounds], cols[in_bounds]] = True
+        mask[rows[in_bounds], cols[in_bounds]] = True
 
     # ---------------------------------------------------------------------- #
     # Scan integration  (the core mapping function)

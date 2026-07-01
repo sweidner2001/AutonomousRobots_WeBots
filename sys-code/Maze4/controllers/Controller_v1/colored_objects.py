@@ -1,0 +1,256 @@
+"""
+colored_objects.py  --  Tracking blue/yellow target objects with the RGB-D camera.
+======================================================================================
+
+WHAT DOES THIS FILE DO?
+-------------------------
+Somewhere in the maze there is a BLUE object and a YELLOW object the robot
+must find.  This file has two jobs:
+
+  1. ColorObjectDetector -- scans the RGB-D camera every few control steps
+     for blue/yellow pixels and converts them to world (x, y) points, using
+     the exact same RGB-D registration pipeline as floor_hazard.py (see that
+     file's module docstring for why registration is necessary at all).
+
+  2. TrackedObject -- a small state-holder class, ONE INSTANCE PER COLOUR,
+     that remembers everything we currently know about that object:
+       - world_xy   : our best estimate of where it is (or None if never seen)
+       - seen       : have we ever detected this colour at all?
+       - reachable  : can the planner currently find a path to it?
+                      (None = not yet checked, True/False once it has been)
+       - reached    : has the robot's own position come within OBJECT_REACH_TOL
+                      of the object at some point?
+
+WHY A SEPARATE CLASS FOR TRACKING STATE?
+--------------------------------------------
+Detection happens every few camera frames and is noisy (a single frame might
+see the object from a slightly different angle, or not at all).  TrackedObject
+smooths this out with a running average of all detections so far, and gives
+the rest of the code (explorer.py, a future "go fetch the object" mission
+phase) one simple place to ask "where is the blue object, and can I get
+there?" instead of re-deriving that from raw detections every time.
+
+HOW BLUE/YELLOW OBJECTS BECOME OBSTACLES
+----------------------------------------------
+Exactly like the green floor hazards: every detected point is stamped into
+OccupancyGrid.mark_object_world(colour, xs, ys), which PathPlanner.build_nav_grid()
+folds into `blocked` (inflated, same safety margin as walls).  A*, the flood
+fill, and frontier detection therefore automatically route the robot around a
+tracked object -- "we cannot drive through them" falls out of the existing
+pipeline for free.
+
+WHY NO GROUND-PLANE FILTER (UNLIKE floor_hazard.py)?
+--------------------------------------------------------
+floor_hazard.py only wants points that lie FLAT ON THE FLOOR (green tiles).
+Blue/yellow objects are assumed to be upright items (boxes, pillars, etc.)
+that can appear at any height in the image, so we scan the FULL frame
+instead of only the rows below the horizon.
+"""
+
+import math
+
+import numpy as np
+
+import Maze4.controllers.Controller_v1.config as C
+from Maze4.controllers.Controller_v1.camera_geometry import (
+    CameraIntrinsics, sample_pixel_grid, back_project,
+    register_and_sample_rgb, rgb_to_hsv, tilt_correct, camera_local_to_world,
+)
+
+
+# ============================================================================
+# TrackedObject -- one instance per colour (blue, yellow)
+# ============================================================================
+class TrackedObject:
+    """Remembers everything currently known about one coloured target object.
+
+    One instance of this class exists per colour (see MazeExplorer.__init__:
+    self.blue_object = TrackedObject("blue"), self.yellow_object = TrackedObject("yellow")).
+    """
+
+    def __init__(self, color_name):
+        self.color_name = color_name
+
+        self.world_xy   = None   # (x, y) best-estimate position, or None if never seen
+        self.seen        = False # True as soon as we detect this colour at all
+        self.reachable   = None  # None = not checked yet; True/False once checked
+        self.reached     = False # True once the robot has gotten close to it
+
+        self.num_detections = 0    # how many individual points have contributed
+        self.last_seen_time  = None  # simulation time (s) of the most recent detection
+
+    # ------------------------------------------------------------------ #
+    def update_detection(self, xs, ys, now):
+        """Fold a new batch of detected world points into the running estimate.
+
+        Uses a running average weighted by how many points have already
+        contributed, so a single noisy frame cannot suddenly yank the
+        estimated position -- each new frame's centroid nudges the estimate
+        rather than replacing it outright.
+
+        Args:
+            xs, ys : 1-D NumPy arrays of world coordinates detected THIS frame
+                     (may be empty -- a normal "not visible this frame" case).
+            now    : current simulation time (s).
+        """
+        n_new = len(xs)
+        if n_new == 0:
+            return
+
+        cx, cy = float(np.mean(xs)), float(np.mean(ys))
+
+        if self.world_xy is None:
+            self.world_xy = (cx, cy)
+        else:
+            # Weighted running average: old estimate keeps its accumulated
+            # weight (num_detections), the new centroid counts as n_new points.
+            n_old = self.num_detections
+            total = n_old + n_new
+            ox, oy = self.world_xy
+            self.world_xy = (
+                (ox * n_old + cx * n_new) / total,
+                (oy * n_old + cy * n_new) / total,
+            )
+
+        self.num_detections += n_new
+        self.seen             = True
+        self.last_seen_time   = now
+
+    # ------------------------------------------------------------------ #
+    def update_reachable(self, reachable_mask, grid):
+        """Refresh the `reachable` flag using the planner's flood-fill result.
+
+        `reachable_mask` is the SAME boolean array the frontier exploration
+        pipeline already computes every planning cycle (PathPlanner.build_nav_grid's
+        `reachable` output, cached as Explorer._reachable_cache) -- checking a
+        single cell in it is essentially free, no extra A* call needed.
+
+        Args:
+            reachable_mask : bool ndarray, True where the robot can currently
+                              reach that cell (flood fill from robot position).
+            grid            : OccupancyGrid, for world_to_grid conversion.
+        """
+        if self.world_xy is None or reachable_mask is None:
+            return
+        col, row = grid.world_to_grid(*self.world_xy)
+        if 0 <= row < reachable_mask.shape[0] and 0 <= col < reachable_mask.shape[1]:
+            self.reachable = bool(reachable_mask[row, col])
+
+    # ------------------------------------------------------------------ #
+    def update_reached(self, robot_xy, tol=None):
+        """Mark this object as reached if the robot is currently close enough.
+
+        Once reached, stays reached (sticky) -- matches the same
+        "never forget a confirmed fact" philosophy as the hazard grid.
+
+        Args:
+            robot_xy : (x, y) current robot position.
+            tol      : distance tolerance (m); defaults to config.OBJECT_REACH_TOL.
+
+        Returns:
+            True if this call is what newly marked it as reached (useful for
+            one-shot "we just arrived!" logging), False otherwise.
+        """
+        if self.reached or self.world_xy is None:
+            return False
+        tol = C.OBJECT_REACH_TOL if tol is None else tol
+        dist = math.hypot(robot_xy[0] - self.world_xy[0],
+                           robot_xy[1] - self.world_xy[1])
+        if dist <= tol:
+            self.reached = True
+            return True
+        return False
+
+    # ------------------------------------------------------------------ #
+    def __repr__(self):
+        pos = "None" if self.world_xy is None else (
+            "(%.2f, %.2f)" % self.world_xy
+        )
+        return ("TrackedObject(%s: seen=%s pos=%s reachable=%s reached=%s n=%d)"
+                % (self.color_name, self.seen, pos, self.reachable,
+                   self.reached, self.num_detections))
+
+
+# ============================================================================
+# ColorObjectDetector -- finds blue/yellow pixels in one RGB-D frame
+# ============================================================================
+class ColorObjectDetector:
+    """Finds blue and yellow pixels in one RGB-D frame and returns their
+    world-frame (x, y) positions, one point cloud per colour.
+
+    Runs the registration pipeline ONCE per frame and tests both colours
+    against the same registered pixels -- cheaper than running two
+    completely separate detectors.
+    """
+
+    def __init__(self, camera_width, camera_height, camera_fov,
+                 depth_min_range, depth_max_range):
+        """See FloorHazardDetector.__init__ -- identical intrinsics, all
+        read live from the Webots device in robot.py."""
+        self.intr = CameraIntrinsics(
+            camera_width, camera_height, camera_fov,
+            depth_min_range, depth_max_range,
+        )
+
+        # Unlike floor_hazard.py we scan the FULL frame: a standing object
+        # can appear anywhere vertically in the image, not just below the
+        # horizon (see module docstring).
+        self._us, self._vs = sample_pixel_grid(self.intr, C.CAMERA_SAMPLE_STRIDE)
+
+    # ------------------------------------------------------------------ #
+    def detect(self, rgb_img, depth_img, pose):
+        """Return world-frame points for each tracked colour this frame.
+
+        Args:
+            rgb_img   : (H, W, 3) uint8 array from Robot.read_camera_rgb().
+            depth_img : (H, W) float32 array (metres) from Robot.read_camera_depth().
+            pose      : (x, y, theta) robot pose from Odometry.
+
+        Returns:
+            dict {"blue": (xs, ys), "yellow": (xs, ys)} -- world coordinates
+            of every matching point this frame (arrays may be empty).
+        """
+        empty = {"blue": (np.empty(0), np.empty(0)),
+                  "yellow": (np.empty(0), np.empty(0))}
+
+        us, vs = self._us, self._vs
+
+        # ---- Step 1: read depth at the sampled pixels ----------------------
+        depth = depth_img[vs.astype(np.int32), us.astype(np.int32)]
+        valid = (
+            np.isfinite(depth)
+            & (depth >= self.intr.min_range)
+            & (depth <= self.intr.max_range)
+        )
+        if not np.any(valid):
+            return empty
+
+        us, vs, depth = us[valid], vs[valid], depth[valid]
+
+        # ---- Step 2: back-project + Step 3: register & sample colour -------
+        x_cam, y_cam, z_cam = back_project(us, vs, depth, self.intr)
+        r, g, b = register_and_sample_rgb(
+            x_cam, y_cam, z_cam, self.intr, C.CAMERA_RGB_DEPTH_BASELINE_M, rgb_img
+        )
+        hue, sat, val = rgb_to_hsv(r, g, b)
+
+        # ---- Step 4: world (x, y) for every candidate point -----------------
+        # (computed once, then filtered per colour below)
+        forward_lvl, _drop_lvl = tilt_correct(y_cam, z_cam, C.CAMERA_TILT_RAD)
+        right_lvl = x_cam
+        world_xs, world_ys = camera_local_to_world(
+            forward_lvl, right_lvl, pose, C.CAMERA_FORWARD_M, C.CAMERA_LATERAL_M
+        )
+
+        result = {}
+        for name, (h_min, h_max, s_min, v_min) in (
+            ("blue",   (C.BLUE_HUE_MIN,   C.BLUE_HUE_MAX,   C.BLUE_SAT_MIN,   C.BLUE_VAL_MIN)),
+            ("yellow", (C.YELLOW_HUE_MIN, C.YELLOW_HUE_MAX, C.YELLOW_SAT_MIN, C.YELLOW_VAL_MIN)),
+        ):
+            match = (hue >= h_min) & (hue <= h_max) & (sat >= s_min) & (val >= v_min)
+            if np.any(match):
+                result[name] = (world_xs[match], world_ys[match])
+            else:
+                result[name] = (np.empty(0), np.empty(0))
+
+        return result

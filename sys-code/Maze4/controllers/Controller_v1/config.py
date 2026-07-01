@@ -292,6 +292,32 @@ CAMERA_SAMPLE_STRIDE = 6   # Only process every Nth pixel in each axis (subsampl
 HAZARD_INFLATE_CELLS = INFLATE_RADIUS_CELLS  # Same safety margin as walls.
 
 # ===========================================================================
+# Coloured target objects (blue / yellow) -- detection + tracking
+# ===========================================================================
+# Two coloured objects somewhere in the maze must be found and treated as
+# obstacles (see colored_objects.py: ColorObjectDetector + TrackedObject).
+# Detection reuses the same camera intrinsics and RGB-D registration
+# pipeline as the green floor hazard (see camera_geometry.py); only the
+# HSV colour bands differ, and objects are NOT restricted to the floor
+# plane (they can appear anywhere in the frame).
+
+BLUE_HUE_MIN = 200   # degrees.  Blue hue band lower bound.
+BLUE_HUE_MAX = 250   # degrees.  Upper bound.
+BLUE_SAT_MIN = 0.35  # [0,1]. Minimum saturation (rules out grey/white).
+BLUE_VAL_MIN = 0.20  # [0,1]. Minimum brightness (rules out near-black shadow).
+
+YELLOW_HUE_MIN = 45   # degrees.  Yellow hue band lower bound.
+YELLOW_HUE_MAX = 69   # degrees.  Upper bound.
+YELLOW_SAT_MIN = 0.35 # [0,1].
+YELLOW_VAL_MIN = 0.20 # [0,1].
+
+# Same safety margin as walls/hazards when inflating for A*.
+OBJECT_INFLATE_CELLS = INFLATE_RADIUS_CELLS
+
+# Distance within which the robot counts as having "reached" a tracked object.
+OBJECT_REACH_TOL = 0.25   # m
+
+# ===========================================================================
 # Mission flags
 # ===========================================================================
 

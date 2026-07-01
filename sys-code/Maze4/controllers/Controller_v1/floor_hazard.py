@@ -94,6 +94,10 @@ import math
 import numpy as np
 
 import Maze4.controllers.Controller_v1.config as C
+from Maze4.controllers.Controller_v1.camera_geometry import (
+    CameraIntrinsics, sample_pixel_grid, back_project,
+    register_and_sample_rgb, rgb_to_hsv, tilt_correct, camera_local_to_world,
+)
 
 
 class FloorHazardDetector:
@@ -115,16 +119,10 @@ class FloorHazardDetector:
         robot.py -- they are passed in here rather than duplicated as
         config.py constants, so there is only one source of truth.
         """
-        self.width  = camera_width
-        self.height = camera_height
-        self.min_range = depth_min_range
-        self.max_range = depth_max_range
-
-        # focal length in pixels, derived from the horizontal FoV:
-        #   tan(fov/2) = (width/2) / f   =>   f = (width/2) / tan(fov/2)
-        self.f  = (self.width / 2.0) / math.tan(camera_fov / 2.0)
-        self.cx = self.width  / 2.0   # principal point (image centre column)
-        self.cy = self.height / 2.0   # principal point (image centre row)
+        self.intr = CameraIntrinsics(
+            camera_width, camera_height, camera_fov,
+            depth_min_range, depth_max_range,
+        )
 
         # --- Precompute the (subsampled) pixel grid ONCE ----------------------
         # We only need to look at rows BELOW the horizon: with a camera tilt
@@ -132,16 +130,12 @@ class FloorHazardDetector:
         # falls at row = cy + f * tan(CAMERA_TILT_RAD).  Rows above that can
         # never see the floor (they look above the horizontal), so skipping
         # them roughly halves the work for a level-mounted camera.
-        horizon_row = int(self.cy + self.f * math.tan(C.CAMERA_TILT_RAD))
+        horizon_row = int(self.intr.cy + self.intr.f * math.tan(C.CAMERA_TILT_RAD))
         row_start   = max(0, horizon_row)
 
-        stride = C.CAMERA_SAMPLE_STRIDE
-        self._us, self._vs = np.meshgrid(
-            np.arange(0, self.width,  stride),
-            np.arange(row_start, self.height, stride),
+        self._us, self._vs = sample_pixel_grid(
+            self.intr, C.CAMERA_SAMPLE_STRIDE, row_start=row_start
         )
-        self._us = self._us.astype(np.float32)
-        self._vs = self._vs.astype(np.float32)
 
     # ------------------------------------------------------------------ #
     # Main entry point
@@ -164,8 +158,8 @@ class FloorHazardDetector:
         depth = depth_img[vs.astype(np.int32), us.astype(np.int32)]
         valid = (
             np.isfinite(depth)
-            & (depth >= self.min_range)
-            & (depth <= self.max_range)
+            & (depth >= self.intr.min_range)
+            & (depth <= self.intr.max_range)
         )
         if not np.any(valid):
             return np.empty(0), np.empty(0)
@@ -173,16 +167,20 @@ class FloorHazardDetector:
         us, vs, depth = us[valid], vs[valid], depth[valid]
 
         # ---- Step 2: back-project depth pixels to 3-D (depth camera frame) --
-        # Camera-local axes: X = right, Y = down, Z = forward (= depth value).
-        x_cam = (us - self.cx) * depth / self.f
-        y_cam = (vs - self.cy) * depth / self.f
-        z_cam = depth
+        x_cam, y_cam, z_cam = back_project(us, vs, depth, self.intr)
 
         # ---- Step 3: register into the RGB camera's frame + sample colour ---
-        r, g, b = self._sample_registered_rgb(x_cam, y_cam, z_cam, rgb_img)
+        r, g, b = register_and_sample_rgb(
+            x_cam, y_cam, z_cam, self.intr, C.CAMERA_RGB_DEPTH_BASELINE_M, rgb_img
+        )
 
         # ---- Step 4: green colour test (HSV hue/sat/val thresholds) ---------
-        green = self._is_green(r, g, b)
+        hue, sat, val = rgb_to_hsv(r, g, b)
+        green = (
+            (hue >= C.GREEN_HUE_MIN) & (hue <= C.GREEN_HUE_MAX)
+            & (sat >= C.GREEN_SAT_MIN)
+            & (val >= C.GREEN_VAL_MIN)
+        )
         if not np.any(green):
             return np.empty(0), np.empty(0)
 
@@ -190,10 +188,7 @@ class FloorHazardDetector:
         # Rotate the camera-local point by the mount tilt to find how far
         # above the true ground plane it sits, then keep only points close
         # to height = 0 (the floor).
-        tilt = C.CAMERA_TILT_RAD
-        # forward/height in the TILT-CORRECTED (level) frame:
-        forward_lvl = z_cam * math.cos(tilt) - y_cam * math.sin(tilt)
-        drop_lvl    = z_cam * math.sin(tilt) + y_cam * math.cos(tilt)
+        forward_lvl, drop_lvl = tilt_correct(y_cam, z_cam, C.CAMERA_TILT_RAD)
         height_above_ground = C.CAMERA_HEIGHT_M - drop_lvl
 
         on_floor = np.abs(height_above_ground) <= C.GROUND_PLANE_TOL_M
@@ -206,93 +201,6 @@ class FloorHazardDetector:
         right_lvl   = x_cam[keep]   # left/right offset unaffected by pitch tilt
 
         # ---- Step 6: camera-local (forward, right) -> world (x, y) ----------
-        x, y, theta = pose
-        # Camera mount offset in the robot's own frame.
-        mount_fwd = C.CAMERA_FORWARD_M
-        mount_lat = C.CAMERA_LATERAL_M
-
-        # Combine mount offset with the per-point forward/right offsets,
-        # then rotate the whole thing into the world frame by robot heading.
-        body_fwd = mount_fwd + forward_lvl
-        body_lft = mount_lat - right_lvl   # image "right" = robot "left" negated
-
-        world_xs = x + body_fwd * np.cos(theta) - body_lft * np.sin(theta)
-        world_ys = y + body_fwd * np.sin(theta) + body_lft * np.cos(theta)
-
-        return world_xs, world_ys
-
-    # ------------------------------------------------------------------ #
-    # RGB-D registration
-    # ------------------------------------------------------------------ #
-    def _sample_registered_rgb(self, x_cam, y_cam, z_cam, rgb_img):
-        """Sample RGB colour for 3-D points expressed in the DEPTH camera's
-        local frame, correctly accounting for the RGB/depth lens baseline.
-
-        Shifts each point by the known baseline (a pure translation, since
-        both lenses share the same orientation), then re-projects into the
-        RGB image using the same pinhole intrinsics (identical resolution
-        and FoV for both lenses on this camera model).
-        """
-        # Step 2 of the module docstring: shift into the RGB camera's frame.
-        # The baseline is horizontal (left-right), matching the real Astra
-        # hardware -- see config.py CAMERA_RGB_DEPTH_BASELINE_M.
-        x_rgb = x_cam - C.CAMERA_RGB_DEPTH_BASELINE_M
-        y_rgb = y_cam
-        z_rgb = z_cam
-
-        # Step 3: re-project into the RGB image plane.
-        u_rgb = self.cx + x_rgb * self.f / z_rgb
-        v_rgb = self.cy + y_rgb * self.f / z_rgb
-
-        # Round to nearest pixel and clip to valid image bounds.
-        u_idx = np.clip(np.round(u_rgb).astype(np.int32), 0, self.width  - 1)
-        v_idx = np.clip(np.round(v_rgb).astype(np.int32), 0, self.height - 1)
-
-        pixels = rgb_img[v_idx, u_idx]   # (N, 3) uint8
-        return pixels[:, 0], pixels[:, 1], pixels[:, 2]
-
-    # ------------------------------------------------------------------ #
-    # Colour classification
-    # ------------------------------------------------------------------ #
-    @staticmethod
-    def _is_green(r, g, b):
-        """Vectorised RGB -> HSV green threshold (no OpenCV dependency).
-
-        Using HUE (not raw RGB) makes the test robust to shading: a tile
-        lit brightly and the same tile in shadow have the same hue, just
-        different value/saturation.
-
-        Standard RGB->HSV formulas:
-            V   = max(r, g, b)
-            S   = (V - min) / V                (0 if V == 0)
-            H   = 60 * ((g - b) / delta)        if V == r
-                  60 * (2 + (b - r) / delta)    if V == g
-                  60 * (4 + (r - g) / delta)    if V == b
-                  (H is undefined / 0 when delta == 0, i.e. a grey pixel)
-        """
-        rf = r.astype(np.float32) / 255.0
-        gf = g.astype(np.float32) / 255.0
-        bf = b.astype(np.float32) / 255.0
-
-        v = np.maximum(np.maximum(rf, gf), bf)
-        mn = np.minimum(np.minimum(rf, gf), bf)
-        delta = v - mn
-
-        s = np.divide(delta, v, out=np.zeros_like(v), where=(v > 1e-6))
-
-        hue = np.zeros_like(v)
-        safe_delta = np.where(delta > 1e-6, delta, 1.0)  # avoid /0; masked out below
-
-        is_r_max = (v == rf) & (delta > 1e-6)
-        is_g_max = (v == gf) & (delta > 1e-6) & ~is_r_max
-        is_b_max = (v == bf) & (delta > 1e-6) & ~is_r_max & ~is_g_max
-
-        hue = np.where(is_r_max, 60.0 * (((gf - bf) / safe_delta) % 6.0), hue)
-        hue = np.where(is_g_max, 60.0 * (((bf - rf) / safe_delta) + 2.0), hue)
-        hue = np.where(is_b_max, 60.0 * (((rf - gf) / safe_delta) + 4.0), hue)
-
-        return (
-            (hue >= C.GREEN_HUE_MIN) & (hue <= C.GREEN_HUE_MAX)
-            & (s >= C.GREEN_SAT_MIN)
-            & (v >= C.GREEN_VAL_MIN)
+        return camera_local_to_world(
+            forward_lvl, right_lvl, pose, C.CAMERA_FORWARD_M, C.CAMERA_LATERAL_M
         )

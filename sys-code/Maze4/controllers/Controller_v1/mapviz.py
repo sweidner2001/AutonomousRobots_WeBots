@@ -162,16 +162,18 @@ class MapViz:
     def _render_rgb(self):
         """Build an RGB colour image from the current occupancy map.
 
-        Each cell gets one of four colours based on its state:
+        Each cell gets one of six colours based on its state:
           grey        (0.6, 0.6, 0.6) = unknown   (never observed)
           white       (1.0, 1.0, 1.0) = free      (observed and probably empty)
           black       (0.0, 0.0, 0.0) = occupied  (probably a wall)
           bright green(0.1, 0.9, 0.1) = hazard    (camera-detected green floor
                                                     marking -- treated like a wall)
+          blue        (0.15,0.35,0.95)= blue tracked object
+          yellow      (0.95,0.85,0.10)= yellow tracked object
 
-        Hazard is drawn LAST so it is always visible even on top of a cell
-        that also reads as "free" from the lidar (the camera sees hazards
-        the lidar cannot: they lie flat on the floor, invisible to a 2-D scan).
+        Hazard/object cells are drawn LAST so they are always visible even
+        on top of a cell that also reads as "free" from the lidar (the
+        camera sees things the lidar's flat 2-D scan plane cannot).
 
         Returns:
             np.ndarray shape (nrows, ncols, 3), dtype float32, values [0, 1].
@@ -192,6 +194,10 @@ class MapViz:
 
         # Override camera-detected hazard cells with bright green.
         img[self.grid.hazard_mask()] = (0.1, 0.9, 0.1)
+
+        # Override camera-detected tracked-object cells with their colour.
+        img[self.grid.object_mask("blue")]   = (0.15, 0.35, 0.95)
+        img[self.grid.object_mask("yellow")] = (0.95, 0.85, 0.10)
 
         return img
 
