@@ -21,6 +21,7 @@ The MazeExplorer is the "conductor" that owns all subsystems:
   │  PathPlanner  -- A* path to best frontier            │
   │  Pilot        -- converts path into motor commands   │
   │  MapViz       -- live matplotlib visualisation       │
+  │  FloorHazardDetector -- finds green "no-go" tiles    │
   │  Explorer     -- decides what to do next (FSM below) │
   └──────────────────────────────────────────────────────┘
 
@@ -74,6 +75,7 @@ from Maze4.controllers.Controller_v1.planner        import PathPlanner
 from Maze4.controllers.Controller_v1.pilot_2          import Pilot
 from Maze4.controllers.Controller_v1.mapviz         import MapViz
 from Maze4.controllers.Controller_v1.mission        import Mission
+from Maze4.controllers.Controller_v1.floor_hazard   import FloorHazardDetector
 
 
 class Explorer:
@@ -418,6 +420,7 @@ class MazeExplorer:
         self.planner  = PathPlanner()
         self.pilot    = Pilot()
         self.viz      = MapViz(self.grid)
+        self.hazard_detector = FloorHazardDetector()
         self.explorer = Explorer(
             self.grid, self.frontier, self.planner, self.pilot
         )
@@ -505,6 +508,14 @@ class MazeExplorer:
                 self.pose[0], self.pose[1], self.pose[2],
                 self.ranges, self.robot.bearings
             )
+
+        # Look for green floor hazards with the RGB-D camera (also not every
+        # step -- back-projecting + registering pixels has a real CPU cost).
+        if self.step_i % C.CAMERA_EVERY == 0:
+            rgb_img   = self.robot.read_camera_rgb()
+            depth_img = self.robot.read_camera_depth()
+            xs, ys = self.hazard_detector.detect(rgb_img, depth_img, self.pose)
+            self.grid.mark_hazard_world(xs, ys)
 
     def get_scan_similarity_to_previous(self):
         """Compute the similarity between the current and previous lidar scans.

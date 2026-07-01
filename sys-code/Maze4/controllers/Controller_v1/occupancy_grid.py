@@ -82,6 +82,14 @@ class OccupancyGrid:
         # Boolean mask: True if this cell has ever been touched by a lidar ray.
         self.observed = np.zeros((self.nrows, self.ncols), dtype=bool)
 
+        # Boolean mask: True where the camera has spotted a green "do not
+        # drive here" floor marking.  Unlike the probabilistic wall map,
+        # this is STICKY -- once a cell is flagged it is never cleared.
+        # A false positive here just makes the robot take a longer path;
+        # a false negative would let it drive over a hazard, so we err on
+        # the side of never forgetting a detection.
+        self.hazard = np.zeros((self.nrows, self.ncols), dtype=bool)
+
     # ---------------------------------------------------------------------- #
     # Coordinate conversion helpers
     # ---------------------------------------------------------------------- #
@@ -140,6 +148,39 @@ class OccupancyGrid:
         at the boundary between free and unknown cells.
         """
         return ~self.observed
+
+    def hazard_mask(self):
+        """Boolean mask: True where a green floor hazard has been detected.
+
+        Returned directly (already boolean, no thresholding needed).
+        """
+        return self.hazard
+
+    # ---------------------------------------------------------------------- #
+    # Camera-based hazard marking
+    # ---------------------------------------------------------------------- #
+    def mark_hazard_world(self, xs, ys):
+        """Flag the grid cells at the given world coordinates as hazards.
+
+        Called by MazeExplorer with the (x, y) points that FloorHazardDetector
+        found to be green AND on the floor.  Marking is permanent (see the
+        `hazard` array's docstring in __init__ for why).
+
+        Args:
+            xs, ys : 1-D NumPy arrays of world coordinates (metres).
+                     May be empty -- this is a normal "nothing detected" frame.
+        """
+        if len(xs) == 0:
+            return
+
+        cols = ((xs - self.ox) / self.res).astype(np.int32)
+        rows = ((ys - self.oy) / self.res).astype(np.int32)
+
+        in_bounds = (
+            (cols >= 0) & (cols < self.ncols)
+            & (rows >= 0) & (rows < self.nrows)
+        )
+        self.hazard[rows[in_bounds], cols[in_bounds]] = True
 
     # ---------------------------------------------------------------------- #
     # Scan integration  (the core mapping function)

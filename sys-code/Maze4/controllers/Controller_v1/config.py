@@ -212,6 +212,76 @@ SPIN_SEED_TURN = 6.5  # rad  Total rotation during the SPIN_SEED phase
                         # ensure a complete 360° view before planning).
 
 # ===========================================================================
+# RGB-D floor hazard detection (green "do not drive here" tiles)
+# ===========================================================================
+# The Astra RGB-D camera is used to spot green floor markings and turn them
+# into permanent obstacles on the occupancy grid, exactly like a wall.
+#
+# WHY REGISTRATION (ALIGNING DEPTH <-> RGB) MATTERS
+# ----------------------------------------------------
+# The RGB lens and the depth lens are NOT at the same physical point on the
+# camera body — they sit a few centimetres apart (this is true on the real
+# Orbbec Astra hardware, and the Webots model copies the real geometry).
+# Because of this baseline offset, the same 3-D point projects to DIFFERENT
+# pixel coordinates in the two images.  At a typical floor distance of 0.5 m
+# the shift is roughly 25-30 pixels — big enough that naively reading
+# rgb[u, v] and depth[u, v] at the same (u, v) samples the WRONG colour for
+# many points.  floor_hazard.py fixes this with proper back-projection +
+# reprojection (see that file's module docstring for the full derivation).
+
+# --- Camera intrinsics (from the Astra PROTO used by the Rosbot model) -----
+CAMERA_WIDTH   = 640      # pixels (both RGB and depth image, same resolution)
+CAMERA_HEIGHT  = 480      # pixels
+CAMERA_FOV     = 1.04     # rad, HORIZONTAL field of view (~60°).
+                           # Vertical FOV is derived from this + aspect ratio.
+
+CAMERA_MIN_RANGE = 0.6    # m  Astra depth sensor cannot measure closer than this.
+CAMERA_MAX_RANGE = 8.0    # m  Astra depth sensor max range.
+
+# --- Camera mount pose relative to the robot body centre --------------------
+# Best-effort values read from the Rosbot/Astra PROTO files.  If the detected
+# floor mask looks shifted too far/near in the live debug view, tune
+# CAMERA_TILT_RAD first (it has the largest effect on where the "floor band"
+# falls in the image).
+CAMERA_HEIGHT_M     = 0.165  # m   Camera height above the ground.
+CAMERA_FORWARD_M    = -0.027 # m   Camera offset along the robot's forward axis.
+CAMERA_LATERAL_M    = 0.0    # m   Camera offset sideways (left positive).
+CAMERA_TILT_RAD     = 0.0    # rad Downward pitch of the camera. 0 = perfectly
+                               # horizontal.  Positive = tilted down toward the floor.
+
+# --- RGB <-> depth lens baseline (registration offset) ---------------------
+# Real Astra cameras have their RGB and depth (IR) lenses offset by ~25 mm
+# HORIZONTALLY (left-right), which is what causes the "slightly different
+# picture" the other student mentioned.  This is used to correctly shift
+# a back-projected depth point into the RGB camera's own frame before
+# sampling colour (see floor_hazard.py: register_depth_to_rgb()).
+CAMERA_RGB_DEPTH_BASELINE_M = 0.026   # m, horizontal offset between the two lenses.
+
+# --- Green floor detection (HSV threshold) ----------------------------------
+# HSV is far more robust to shading/lighting than raw RGB thresholds because
+# hue alone identifies "green" regardless of how bright the tile looks.
+GREEN_HUE_MIN = 70     # degrees (0-360).  Green hue band lower bound.
+GREEN_HUE_MAX = 170    # degrees.  Upper bound (covers yellow-green to teal-green).
+GREEN_SAT_MIN = 0.35   # [0,1]. Minimum colour saturation (rules out grey/white floor).
+GREEN_VAL_MIN = 0.20   # [0,1]. Minimum brightness (rules out near-black shadow pixels).
+
+# --- Ground-plane filter ----------------------------------------------------
+# A back-projected 3-D point counts as "on the floor" only if its computed
+# height is within this tolerance of the ground (z = 0).  This rejects green
+# objects that are NOT on the floor (e.g. a green wall poster) even if their
+# colour matches.
+GROUND_PLANE_TOL_M = 0.05   # m
+
+# --- Performance / cadence ---------------------------------------------------
+CAMERA_EVERY        = 4   # Run floor-hazard detection every N control steps
+                            # (this is a moderately expensive per-pixel operation).
+CAMERA_SAMPLE_STRIDE = 6   # Only process every Nth pixel in each axis (subsampling
+                            # keeps the per-frame cost small: 640x480 / 6 / 6 ≈ 8500 px).
+
+# --- Hazard obstacle inflation ----------------------------------------------
+HAZARD_INFLATE_CELLS = INFLATE_RADIUS_CELLS  # Same safety margin as walls.
+
+# ===========================================================================
 # Mission flags
 # ===========================================================================
 

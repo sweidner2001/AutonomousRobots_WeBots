@@ -40,6 +40,8 @@ PUBLIC API
   read_lidar()        -- 1-D array of ranges (m); inf = no return
   read_encoders()     -- dict {'fl','fr','rl','rr'} of wheel angles (rad)
   read_yaw()          -- IMU heading (rad)
+  read_camera_rgb()   -- (H,W,3) uint8 RGB image
+  read_camera_depth() -- (H,W) float32 depth image (m), perpendicular Z-depth
   set_velocity(v, w)  -- drive at v m/s forward, w rad/s turning
   stop()              -- set all motors to zero
   bearings            -- precomputed per-ray angle array (rad, robot frame)
@@ -122,12 +124,20 @@ class Robot:
         self.imu.enable(self.timestep)
 
         # ---- RGB-D camera (Astra) ----------------------------------------
-        # Enabled now so Webots buffers frames.  Not used during mapping;
-        # reserved for a future colour-detection phase.
+        # Used for green floor-hazard detection (see floor_hazard.py).
+        # RGB and depth are two PHYSICALLY SEPARATE lenses a few centimetres
+        # apart, so their images are not pixel-aligned -- floor_hazard.py
+        # performs proper registration before comparing colour and depth.
         self.camera_rgb   = self.robot.getDevice("camera rgb")
         self.camera_rgb.enable(self.timestep)
         self.camera_depth = self.robot.getDevice("camera depth")
         self.camera_depth.enable(self.timestep)
+
+        # Cache intrinsics once (identical resolution/FoV for both lenses
+        # on this camera model, read live so the code adapts to the PROTO).
+        self.camera_width  = self.camera_rgb.getWidth()
+        self.camera_height = self.camera_rgb.getHeight()
+        self.camera_fov    = self.camera_rgb.getFov()   # horizontal FoV, rad
 
         # ---- 2-D Lidar (RPLidar A2) --------------------------------------
         # The lidar spins 360° and measures distance to obstacles.
@@ -223,6 +233,33 @@ class Robot:
         Yaw increases counterclockwise (standard mathematical convention).
         """
         return self.imu.getRollPitchYaw()[2]
+
+    def read_camera_rgb(self):
+        """Return the latest RGB camera frame as a (H, W, 3) uint8 array.
+
+        Webots' Camera.getImage() returns a raw byte buffer in BGRA order
+        (4 bytes per pixel).  We reshape it with NumPy (fast, no per-pixel
+        Python loop) and drop the alpha channel, then reorder BGR -> RGB.
+        """
+        raw = self.camera_rgb.getImage()
+        img = np.frombuffer(raw, dtype=np.uint8).reshape(
+            (self.camera_height, self.camera_width, 4)
+        )
+        return img[:, :, [2, 1, 0]]   # BGRA -> RGB (drop alpha)
+
+    def read_camera_depth(self):
+        """Return the latest depth frame as a (H, W) float32 array, in metres.
+
+        Each value is the PERPENDICULAR distance (Z-depth along the optical
+        axis) from the camera to the surface at that pixel -- NOT the
+        straight-line/radial distance.  This matches Webots' own definition
+        of RangeFinder.getRangeImage() and is exactly what the pinhole
+        back-projection formulas in floor_hazard.py expect.
+        """
+        flat = self.camera_depth.getRangeImage()
+        return np.array(flat, dtype=np.float32).reshape(
+            (self.camera_height, self.camera_width)
+        )
 
     # ---------------------------------------------------------------------- #
     # Actuation

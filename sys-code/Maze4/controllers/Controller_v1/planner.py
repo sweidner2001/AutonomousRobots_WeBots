@@ -111,9 +111,18 @@ class PathPlanner:
         by walls).  Flood fill from the robot discards those automatically.
         Only the free-space blob that contains the robot gets label 1.0.
 
+        GREEN FLOOR HAZARDS COUNT AS WALLS
+        -------------------------------------
+        Cells flagged by the camera as green floor markings (see
+        floor_hazard.py / grid.hazard_mask()) are folded into `blocked`
+        exactly like real walls, with the same safety inflation margin.
+        This means A*, the flood fill, and frontier detection automatically
+        treat a green tile as impassable -- no other module needs to know
+        hazards exist.
+
         PIPELINE
         ---------
-          1. Inflate raw wall cells by INFLATE_RADIUS_CELLS (robot safety buffer).
+          1. Inflate raw wall cells AND hazard cells by INFLATE_RADIUS_CELLS.
           2. BFS flood fill from robot position through observed, non-blocked cells.
           3. Assemble: default 0.5, set 0.0 for blocked, set 1.0 for reachable.
 
@@ -124,10 +133,13 @@ class PathPlanner:
         Returns:
             nav       (np.ndarray float32) -- 3-value grid described above.
             reachable (np.ndarray bool)    -- True at flood-filled free cells.
-            blocked   (np.ndarray bool)    -- True at inflated obstacle cells.
+            blocked   (np.ndarray bool)    -- True at inflated obstacle cells
+                                              (walls AND green hazards).
         """
-        # Step 1: inflate obstacles.
-        blocked = self._inflate(grid.occ_mask(), C.INFLATE_RADIUS_CELLS)
+        # Step 1: inflate obstacles -- walls and camera-detected hazards alike.
+        wall_blocked   = self._inflate(grid.occ_mask(),    C.INFLATE_RADIUS_CELLS)
+        hazard_blocked = self._inflate(grid.hazard_mask(), C.HAZARD_INFLATE_CELLS)
+        blocked = wall_blocked | hazard_blocked
 
         # Step 2: flood fill reachable free space from the robot's cell.
         col0, row0 = grid.world_to_grid(*robot_xy)
