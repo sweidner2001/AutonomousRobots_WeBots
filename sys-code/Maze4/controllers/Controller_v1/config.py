@@ -28,6 +28,8 @@ so that grid cell [row=nrows/2, col=ncols/2] corresponds to (0, 0).
 UNITS:  metres (m), radians (rad), seconds (s).
 """
 
+VIZALIZATION_NAV_GRID = False
+
 # ===========================================================================
 # Robot physical dimensions  (from the Rosbot 2 PROTO file in Webots)
 # ===========================================================================
@@ -79,7 +81,7 @@ LIDAR_ANGLE_OFFSET = 0.0  # rad.  Extra rotation if the lidar is mounted
 #   FREE     -- observed and probably empty.   White in the visualisation.
 #   OCCUPIED -- probably contains a wall.      Black in the visualisation.
 
-GRID_RESOLUTION = 0.06   # m per cell side.  Each cell is a 5 cm x 5 cm square.
+GRID_RESOLUTION = 0.04   # m per cell side.  Each cell is a 5 cm x 5 cm square.
                           # Smaller -> finer map, but more memory and slower.
 
 GRID_WIDTH_M  = 15.0     # Total map width in metres.  With 0.05 m/cell

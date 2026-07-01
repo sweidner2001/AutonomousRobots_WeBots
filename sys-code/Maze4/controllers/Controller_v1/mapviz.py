@@ -60,7 +60,7 @@ except Exception:
 class MapViz:
     """Live matplotlib visualisation of the occupancy grid and robot state."""
 
-    def __init__(self, grid, vizualization_nav_grid=False):
+    def __init__(self, grid, vizualization_nav_grid=C.VIZALIZATION_NAV_GRID):
         """Initialise the figure and all plot elements.
 
         Args:

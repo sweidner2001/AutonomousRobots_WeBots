@@ -231,8 +231,8 @@ class Explorer:
         nav, reachable, blocked = self.planner.build_nav_grid(
             self.grid, (pose[0], pose[1])
         )
-        # self._nav_cache = nav
-        # self._reachable_cache = reachable
+        self._nav_cache = nav
+        self._reachable_cache = reachable
         self._blocked_cache = blocked   # used in DRIVE phase to detect path blockage
 
         # --- Step 2: frontier detection ---------------------------------------
@@ -599,14 +599,14 @@ class MazeExplorer:
                 target_xy  = self.explorer.target_xy,
             )
 
-            # self.viz.update_drive_map(
-            #     self.pose,
-            #     # self.explorer._blocked_cache,    # image 1
-            #     # self.explorer._reachable_cache,  # image 2
-            #     nav = self.explorer._nav_cache,         # image 3 + robot pose
-            #     fmask = self.explorer._fmask_cache,      # image 4
-            #     fclusters = self.explorer._fcluster_cache,   # image 5 (list of cluster dicts)
-            # )
+            self.viz.update_drive_map(
+                pose=self.pose,
+                # self.explorer._blocked_cache,    # image 1
+                # self.explorer._reachable_cache,  # image 2
+                nav = self.explorer._nav_cache,         # image 3 + robot pose
+                fmask = self.explorer._fmask_cache,      # image 4
+                fclusters = self.explorer._fcluster_cache,   # image 5 (list of cluster dicts)
+            )
 
     # ---------------------------------------------------------------------- #
     # Mission transitions
