@@ -23,7 +23,7 @@ TexturedBackground {
 Rosbot {
   translation -2.22817 2.79462 0.01
   rotation 0 0 1 2.618
-  controller "<extern>"
+  controller "Controller_v1"
 }
 Solid {
   translation -2.76758 3.40977 0.18

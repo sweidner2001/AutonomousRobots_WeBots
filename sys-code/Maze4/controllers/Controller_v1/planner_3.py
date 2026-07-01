@@ -520,16 +520,16 @@ class PathPlanner:
         Returns:
             Smoothed list of (x, y) tuples (may be longer than input).
         """
-        if len(world_path) < 3:
+        if len(world_path) < 11:
             return list(world_path)
 
         min_turn = math.radians(min_turn_deg)
         result   = [world_path[0]]
 
-        for i in range(1, len(world_path) - 1):
-            px, py = world_path[i - 1]
+        for i in range(5, len(world_path) - 5):
+            px, py = world_path[i - 5]
             cx, cy = world_path[i]
-            nx, ny = world_path[i + 1]
+            nx, ny = world_path[i + 5]
 
             # Incoming / outgoing direction vectors.
             d1x, d1y = cx - px, cy - py
@@ -540,7 +540,7 @@ class PathPlanner:
                 result.append((cx, cy))
                 continue
 
-            # Unit vectors along each segment.
+            # Unit vectors along each segment (Einheitsvektor)
             u1x, u1y = d1x / len1, d1y / len1
             u2x, u2y = d2x / len2, d2y / len2
 
@@ -553,6 +553,7 @@ class PathPlanner:
 
             # Cross product: positive = left turn, negative = right turn.
             cross = u1x * u2y - u1y * u2x
+            # print(f"Corner at {cx:.2f},{cy:.2f}: turn {math.degrees(turn_angle):.1f}° {'left' if cross>0 else 'right'}")
 
             # Bisector of the two unit directions (points "through" the corner).
             bx    = u1x + u2x
@@ -576,6 +577,7 @@ class PathPlanner:
             # At 20° turn (min_turn_deg), offset ≈ 0.
             seg   = min(len1, len2)
             scale = seg * 0.35 * (turn_angle / math.pi)
+            scale = 0.15
 
             # Bézier control point: corner pushed outward.
             ctrl_x = cx + scale * ox
