@@ -155,7 +155,7 @@ class PathPlanner:
         nav = np.full(grid.log.shape, 0.5, dtype=np.float32)
         nav[reachable] = 1.0
         nav[blocked]   = 0.0
-
+        
         return nav, reachable, blocked
 
     @staticmethod

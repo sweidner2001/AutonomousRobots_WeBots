@@ -60,7 +60,7 @@ except Exception:
 class MapViz:
     """Live matplotlib visualisation of the occupancy grid and robot state."""
 
-    def __init__(self, grid):
+    def __init__(self, grid, vizualization_nav_grid=False):
         """Initialise the figure and all plot elements.
 
         Args:
@@ -128,6 +128,35 @@ class MapViz:
         except Exception as e:
             print("[mapviz] init failed (%s) -> live view disabled." % e)
             self.ok = False
+
+        # ---------- second window: 5 internal planner/debug maps ----------
+        self._fig2          = None
+        self._axes2         = None
+        self._drive_ims     = [None] * 5   # AxesImage handles (lazy init)
+        self._drive_arrow2  = None          # heading arrow on the nav grid
+
+        self.vizualization_nav_grid = vizualization_nav_grid
+        if self.ok and vizualization_nav_grid:
+            try:
+                subplots = 3
+                self._fig2, self._axes2 = plt.subplots(
+                    1, subplots, figsize=(15, 5)
+                )
+                _labels = [
+                    # "Blocked cells",
+                    # "Reachable area",
+                    "Nav grid  (+pose)",
+                    "Frontier mask",
+                    "Frontier clusters",
+                ]
+                for ax, lbl in zip(self._axes2, _labels):
+                    ax.set_title(lbl, fontsize=9)
+                    ax.axis("off")
+                self._fig2.suptitle("Internal planner maps", fontsize=11)
+                self._fig2.tight_layout()
+            except Exception as e:
+                print("[mapviz] drive-map fig init failed (%s)" % e)
+                self._fig2 = None
 
     # ---------------------------------------------------------------------- #
     def _render_rgb(self):
@@ -238,6 +267,181 @@ class MapViz:
         except Exception as e:
             print("[mapviz] update failed (%s) -> disabling live view." % e)
             self.ok = False
+
+    # ---------------------------------------------------------------------- #
+    def update_drive_map(self, pose = None, nav=None, fmask=None, fclusters=None):
+        """Refresh the five-panel debug window with internal planner data.
+
+        Each panel shows one stage of the exploration pipeline:
+          1. Blocked cells       -- cells the robot cannot enter (walls + inflation).
+          2. Reachable area      -- cells reachable from the robot via flood-fill.
+          3. Nav grid + pose     -- 3-value grid (free/unknown/blocked) with the
+                                   current robot position and heading overlaid.
+          4. Frontier mask       -- cells on the explored/unexplored boundary.
+          5. Frontier clusters   -- each cluster drawn in a unique colour;
+                                   yellow dot marks the centroid of every cluster.
+
+        Args:
+            pose      : (x, y, theta) robot pose in world metres.
+            blocked   : bool ndarray -- True = cell is blocked.
+            reachable : bool ndarray -- True = cell is reachable.
+            nav       : float32 ndarray -- 0.0 / 0.5 / 1.0 navigation grid.
+            fmask     : bool ndarray -- True = frontier cell.
+            fclusters : list of cluster dicts {'cells', 'centroid', 'size'},
+                        or None if no clusters are available yet.
+        """
+        if self.vizualization_nav_grid is False:
+            return
+        
+        if not self.ok or self._fig2 is None:
+            return
+        # if blocked is None or reachable is None or nav is None or fmask is None:
+        #     return
+
+        try:
+            shape = nav.shape   # (nrows, ncols)
+
+            # -------------------------------------------------------------- #
+            # Build the 5 RGB images (float32, values in [0, 1]).
+            # -------------------------------------------------------------- #
+
+            # Image 1 -- Blocked cells:  white = passable, black = blocked.
+            # if blocked is not None:
+            #     img1 = np.ones(shape + (3,), dtype=np.float32)
+            #     img1[blocked] = 0.0
+
+            # # Image 2 -- Reachable area: dark grey = not reachable,
+            # #                            green     = reachable.
+            # if reachable is not None:
+            #     img2 = np.full(shape + (3,), 0.2, dtype=np.float32)
+            #     img2[reachable] = (0.15, 0.80, 0.25)
+
+            # Image 3 -- Nav grid: grey = unknown (0.5),
+            #                      white = free (1.0), black = blocked (0.0).
+            img3 = np.full(shape + (3,), 0.55, dtype=np.float32)
+            img3[nav == 1.0] = 1.0
+            img3[nav == 0.0] = 0.0
+
+            # Image 4 -- Frontier mask: black = non-frontier,
+            #                           orange = frontier cell.
+            img4 = np.zeros(shape + (3,), dtype=np.float32)
+            img4[fmask] = (1.0, 0.55, 0.0)
+
+            # Image 5 -- Frontier clusters: each cluster gets a distinct hue;
+            #            centroid cell shown as a bright yellow dot.
+            img5 = self._render_clusters(shape, fclusters)
+
+            # imgs = [img1, img2, img3, img4, img5]
+            imgs = [img3, img4, img5]
+            # imgs = [img for img in imgs if img is not None]  # drop any Nones
+
+            # -------------------------------------------------------------- #
+            # Push images to axes (create imshow on first call, then set_data).
+            # -------------------------------------------------------------- #
+            for i, (ax, img) in enumerate(zip(self._axes2, imgs)):
+                if self._drive_ims[i] is None:
+                    self._drive_ims[i] = ax.imshow(
+                        img,
+                        origin="lower",
+                        interpolation="nearest",
+                        vmin=0.0, vmax=1.0,
+                    )
+                else:
+                    self._drive_ims[i].set_data(img)
+
+            # -------------------------------------------------------------- #
+            # Robot pose overlay on axes[2] (nav grid).
+            # Coordinates are in CELL units (col = x-axis, row = y-axis).
+            # -------------------------------------------------------------- #
+            x, y, theta = pose
+            col, row = self.grid.world_to_grid(x, y)
+
+            # Robot dot: reuse a stored Line2D if it exists.
+            if not hasattr(self, "_drive_robot_dot") or self._drive_robot_dot is None:
+                self._drive_robot_dot, = self._axes2[0].plot(
+                    [col], [row], "o", color="red", markersize=2, zorder=5
+                )
+            else:
+                self._drive_robot_dot.set_data([col], [row])
+
+            # Heading arrow in cell units.
+            arrow_cells = 3.0
+            if self._drive_arrow2 is not None:
+                try:
+                    self._drive_arrow2.remove()
+                except Exception:
+                    pass
+            self._drive_arrow2 = self._axes2[0].arrow(
+                col, row,
+                arrow_cells * math.cos(theta),
+                arrow_cells * math.sin(theta),
+                head_width=1.5, head_length=1.5,
+                fc="red", ec="red",
+                length_includes_head=True,
+                zorder=6,
+            )
+
+            # -------------------------------------------------------------- #
+            # Flush to screen.
+            # -------------------------------------------------------------- #
+            self._fig2.canvas.draw_idle()
+            self._fig2.canvas.flush_events()
+
+        except Exception as e:
+            print("[mapviz] update_drive_map failed (%s)" % e)
+
+    # ---------------------------------------------------------------------- #
+    @staticmethod
+    def _render_clusters(shape, clusters):
+        """Build an RGB image that colour-codes frontier clusters.
+
+        Each cluster is painted with a distinct colour from the tab10 palette.
+        The centroid cell of every cluster is overdrawn with bright yellow so
+        it is easy to spot.
+
+        Args:
+            shape    : (nrows, ncols) of the grid.
+            clusters : list of cluster dicts, each containing:
+                         'cells'    -- list of (row, col) tuples
+                         'centroid' -- (row, col) of the cluster centre
+                         'size'     -- number of cells
+                       Pass None or an empty list to get a blank image.
+
+        Returns:
+            np.ndarray shape (nrows, ncols, 3), dtype float32, values [0, 1].
+        """
+        # Dark background (unexplored / non-frontier space).
+        img = np.full(shape + (3,), 0.12, dtype=np.float32)
+
+        if not clusters:
+            return img
+
+        # tab10 gives 10 perceptually distinct colours.
+        try:
+            import matplotlib.pyplot as _plt
+            cmap = _plt.get_cmap("tab10")
+        except Exception:
+            # Fallback: cycle through a small hard-coded palette.
+            _palette = [
+                (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
+                (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29),
+                (0.89, 0.47, 0.76), (0.50, 0.50, 0.50), (0.74, 0.74, 0.13),
+                (0.09, 0.75, 0.81),
+            ]
+            cmap = lambda i: _palette[i % len(_palette)]  # noqa: E731
+
+        nrows, ncols = shape
+        for idx, cl in enumerate(clusters):
+            color = cmap(idx % 10)[:3]   # (R, G, B)
+            for r, c in cl["cells"]:
+                if 0 <= r < nrows and 0 <= c < ncols:
+                    img[r, c] = color
+            # Centroid in bright yellow so it stands out.
+            cr, cc = cl["centroid"]
+            if 0 <= cr < nrows and 0 <= cc < ncols:
+                img[cr, cc] = (1.0, 0.95, 0.0)
+
+        return img
 
     # ---------------------------------------------------------------------- #
     def save(self, path):

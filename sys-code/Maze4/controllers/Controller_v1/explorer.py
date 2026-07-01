@@ -127,6 +127,10 @@ class Explorer:
 
         # Cached blocked mask to avoid rebuilding it every step.
         self._blocked_cache = None
+        self._nav_cache = None
+        self._reachable_cache = None
+        self._fmask_cache = None
+        self._fcluster_cache = None
 
         # ---- REVERSE bookkeeping -----------------------------------------
         self._reverse_end_time = 0.0  # simulation time when backup ends
@@ -227,11 +231,14 @@ class Explorer:
         nav, reachable, blocked = self.planner.build_nav_grid(
             self.grid, (pose[0], pose[1])
         )
+        # self._nav_cache = nav
+        # self._reachable_cache = reachable
         self._blocked_cache = blocked   # used in DRIVE phase to detect path blockage
 
         # --- Step 2: frontier detection ---------------------------------------
         # A frontier is any reachable cell adjacent to an unexplored cell (nav=0.5).
         fmask = self.frontier.detect_cells(nav, reachable)
+        self._fmask_cache = fmask 
         if not fmask.any():
             print("[explorer] no frontiers -> exploration complete.")
             self.phase    = self.DONE
@@ -240,6 +247,7 @@ class Explorer:
 
         # --- Step 3: clustering ----------------------------------------------
         clusters = self.frontier.cluster(fmask)
+        self._fcluster_cache = clusters
         print("[explorer] PLAN: %d frontier cells -> %d clusters, robot=(%.2f,%.2f)"
               % (int(fmask.sum()), len(clusters), pose[0], pose[1]))
 
@@ -590,6 +598,15 @@ class MazeExplorer:
                 world_path = self.explorer.world_path,
                 target_xy  = self.explorer.target_xy,
             )
+
+            # self.viz.update_drive_map(
+            #     self.pose,
+            #     # self.explorer._blocked_cache,    # image 1
+            #     # self.explorer._reachable_cache,  # image 2
+            #     nav = self.explorer._nav_cache,         # image 3 + robot pose
+            #     fmask = self.explorer._fmask_cache,      # image 4
+            #     fclusters = self.explorer._fcluster_cache,   # image 5 (list of cluster dicts)
+            # )
 
     # ---------------------------------------------------------------------- #
     # Mission transitions
