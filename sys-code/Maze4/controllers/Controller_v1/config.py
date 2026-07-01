@@ -160,7 +160,7 @@ CORNER_MIN_SPEED_FACTOR = 0.2  # When the robot is turning a sharp corner, reduc
 # ===========================================================================
 
 CRUISE_SPEED   = 0.16   # m/s  Forward speed during normal driving.
-MAX_TURN_SPEED = 1.8    # rad/s  Maximum angular (turning) speed.
+MAX_TURN_SPEED = 0.9    # rad/s  Maximum angular (turning) speed.
 
 HEADING_KP     = 2.2    # Proportional gain on heading error for pure pursuit.
                           # Increase -> turns more aggressively toward waypoints.

@@ -563,6 +563,8 @@ class MazeExplorer:
                 print("[objects] reached the %s object at (%.2f, %.2f)!"
                       % (obj.color_name, obj.world_xy[0], obj.world_xy[1]))
 
+
+
     def get_scan_similarity_to_previous(self):
         """Compute the similarity between the current and previous lidar scans.
 

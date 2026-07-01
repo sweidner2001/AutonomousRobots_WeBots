@@ -73,7 +73,7 @@ class TrackedObject:
 
         self.world_xy   = None   # (x, y) best-estimate position, or None if never seen
         self.seen        = False # True as soon as we detect this colour at all
-        self.reachable   = None  # None = not checked yet; True/False once checked
+        self.reachable   = False  # None = not checked yet; True/False once checked
         self.reached     = False # True once the robot has gotten close to it
 
         self.num_detections = 0    # how many individual points have contributed
@@ -116,6 +116,9 @@ class TrackedObject:
         self.seen             = True
         self.last_seen_time   = now
 
+
+
+
     # ------------------------------------------------------------------ #
     def update_reachable(self, reachable_mask, grid):
         """Refresh the `reachable` flag using the planner's flood-fill result.
@@ -135,6 +138,8 @@ class TrackedObject:
         col, row = grid.world_to_grid(*self.world_xy)
         if 0 <= row < reachable_mask.shape[0] and 0 <= col < reachable_mask.shape[1]:
             self.reachable = bool(reachable_mask[row, col])
+
+
 
     # ------------------------------------------------------------------ #
     def update_reached(self, robot_xy, tol=None):
