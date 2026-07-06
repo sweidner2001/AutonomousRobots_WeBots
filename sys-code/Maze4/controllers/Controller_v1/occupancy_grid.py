@@ -90,12 +90,16 @@ class OccupancyGrid:
         # the side of never forgetting a detection.
         self.hazard = np.zeros((self.nrows, self.ncols), dtype=bool)
 
-        # Boolean masks: True where the camera has spotted the blue / yellow
-        # target object.  Also sticky, for the same reason as `hazard` above
-        # -- once we know a cell holds a solid object, we never "un-know" it.
-        self.object_masks = {
-            "blue":   np.zeros((self.nrows, self.ncols), dtype=bool),
-            "yellow": np.zeros((self.nrows, self.ncols), dtype=bool),
+        # Log-odds maps for the blue / yellow target objects -- ONE per colour.
+        # Unlike `hazard` (which is sticky), these behave EXACTLY like the
+        # lidar wall map `self.log`: every camera frame adds positive evidence
+        # to cells that looked like the colour and negative evidence to cells
+        # that were clearly visible but were NOT that colour.  A false
+        # detection therefore decays away once the camera looks again and
+        # disagrees -- see update_object_observation().  0 = unknown (p=0.5).
+        self.object_log = {
+            "blue":   np.zeros((self.nrows, self.ncols), dtype=np.float32),
+            "yellow": np.zeros((self.nrows, self.ncols), dtype=np.float32),
         }
 
     # ---------------------------------------------------------------------- #
@@ -164,19 +168,51 @@ class OccupancyGrid:
         """
         return self.hazard
 
+    def object_prob(self, color):
+        """Return the (nrows x ncols) occupancy-probability array for `color`.
+
+        p = sigmoid(L) = 1 / (1 + e^(-L)), same relation as prob() uses for
+        the lidar wall map.
+        """
+        return 1.0 - 1.0 / (1.0 + np.exp(self.object_log[color]))
+
     def object_mask(self, color):
         """Boolean mask: True where the given colour ('blue' or 'yellow')
-        has been detected."""
-        return self.object_masks[color]
+        is currently believed to hold the object (p >= P_OBJ_THRESH).
+
+        This is a LIVE view of the log-odds map, so a cell that was a false
+        positive drops back to False on its own once the camera revisits it
+        and sees non-matching colour there (see update_object_observation()).
+        """
+        return self.object_prob(color) >= C.P_OBJ_THRESH
+
+    def object_centroid(self, color):
+        """Return the world (x, y) centre of the cells currently believed to
+        hold `color`'s object, or None if no cell is above threshold.
+
+        Because this is computed FRESH from object_mask() every call, the
+        estimate self-corrects: when a false-positive cell decays back below
+        threshold it stops contributing, and the centroid shifts back onto
+        the real object -- unlike a running average, which can never forget a
+        point it once averaged in.
+        """
+        mask = self.object_mask(color)
+        rows, cols = np.nonzero(mask)
+        if rows.size == 0:
+            return None
+        # Cell centres, then mean -> world centroid of the believed object.
+        x = self.ox + (cols.mean() + 0.5) * self.res
+        y = self.oy + (rows.mean() + 0.5) * self.res
+        return float(x), float(y)
 
     def any_object_mask(self):
-        """Boolean mask: True where EITHER tracked colour has been detected.
+        """Boolean mask: True where EITHER tracked colour is believed present.
 
         Used by the planner to inflate/block both colours' cells in a
         single pass -- it doesn't need to distinguish which colour it is,
         only that the robot cannot drive through it.
         """
-        return self.object_masks["blue"] | self.object_masks["yellow"]
+        return self.object_mask("blue") | self.object_mask("yellow")
 
     # ---------------------------------------------------------------------- #
     # Reconciling the lidar wall map with camera-detected objects
@@ -198,8 +234,9 @@ class OccupancyGrid:
 
         HOW IT WORKS
         -------------
-        1. Start from self.object_masks[color] -- the raw, camera-only
-           detections.  This array is NEVER modified by this method.
+        1. Start from object_mask(color) -- the current camera-only
+           detections (a live thresholded view of object_log, never
+           modified by this method).
         2. Grow that mask outward by max_distance_m, 4-CONNECTED steps
            only (up/down/left/right, no diagonals) via
            grow_mask_4connected() -- a small, BOUNDED region.  This must
@@ -225,8 +262,7 @@ class OccupancyGrid:
         it free after all, it simply disappears from THIS method's
         result on the very next call too -- "trusting the sensor and
         deleting it" falls out automatically, with no extra bookkeeping.
-        The raw self.object_masks[color] (the camera's own direct
-        detections) is untouched either way.
+        The camera's own object_log is untouched either way.
 
         Args:
             color          : "blue" or "yellow".
@@ -239,12 +275,11 @@ class OccupancyGrid:
             np.ndarray bool -- raw camera detections UNION any nearby
             lidar-confirmed wall cells.
         """
-        return self.object_masks[color]
         if max_distance_m is None:
             max_distance_m = C.OBJECT_WALL_MATCH_DISTANCE_M
         radius_cells = max(1, int(round(max_distance_m / self.res)))
 
-        raw          = self.object_masks[color]
+        raw          = self.object_mask(color)
         grown        = grow_mask_4connected(raw, radius_cells)
         matched_wall = grown & self.occ_mask()
 
@@ -266,15 +301,51 @@ class OccupancyGrid:
         """
         self._mark_world(self.hazard, xs, ys)
 
-    def mark_object_world(self, color, xs, ys):
-        """Flag the grid cells at the given world coordinates as holding the
-        given colour's tracked object.  Same semantics as mark_hazard_world.
+    def update_object_observation(self, color, hit_xs, hit_ys, free_xs, free_ys):
+        """Fold ONE camera frame's colour observation into `color`'s log-odds
+        map -- the object-detection twin of integrate_scan()'s inverse sensor
+        model.
+
+        Every camera frame produces two sets of world points for each colour:
+
+          * hit points  -- pixels that MATCHED the colour this frame.  Each
+            adds L_OBJ_OCC to its cell ("the object is here").
+          * free points -- pixels with valid depth that were clearly visible
+            but did NOT match the colour.  Each adds L_OBJ_FREE ("something
+            is here, and it is not this colour"), which lets a past false
+            positive decay back below threshold.
+
+        Cells the camera could not see this frame are simply left untouched,
+        so their belief neither grows nor decays -- exactly like a lidar cell
+        that no ray passed through.
 
         Args:
-            color  : "blue" or "yellow".
-            xs, ys : 1-D NumPy arrays of world coordinates (metres).
+            color                : "blue" or "yellow".
+            hit_xs, hit_ys       : world coords of matching pixels (may be empty).
+            free_xs, free_ys     : world coords of visible non-matching pixels
+                                   (may be empty).
         """
-        self._mark_world(self.object_masks[color], xs, ys)
+        log = self.object_log[color]
+        # Negative evidence first, then positive -- if the SAME cell somehow
+        # appears in both (it cannot within one frame, but be safe), the "hit"
+        # wins, matching |L_OCC| > |L_FREE| in the lidar model.
+        self._add_logodds(log, free_xs, free_ys, C.L_OBJ_FREE, C.L_OBJ_CLAMP)
+        self._add_logodds(log, hit_xs,  hit_ys,  C.L_OBJ_OCC,  C.L_OBJ_CLAMP)
+
+    def _add_logodds(self, log, xs, ys, delta, clamp):
+        """Shared helper: add `delta` to `log` at the cells under (xs, ys),
+        clamped to +/- `clamp`.  Out-of-bounds points are dropped."""
+        if len(xs) == 0:
+            return
+        cols = ((np.asarray(xs) - self.ox) / self.res).astype(np.int32)
+        rows = ((np.asarray(ys) - self.oy) / self.res).astype(np.int32)
+        keep = (
+            (cols >= 0) & (cols < self.ncols)
+            & (rows >= 0) & (rows < self.nrows)
+        )
+        # np.add.at accumulates correctly when several points land on one cell.
+        np.add.at(log, (rows[keep], cols[keep]), delta)
+        np.clip(log, -clamp, clamp, out=log)
 
     def _mark_world(self, mask, xs, ys):
         """Shared helper: set `mask` to True at the grid cells under (xs, ys)."""

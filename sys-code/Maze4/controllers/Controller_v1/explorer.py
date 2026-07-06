@@ -797,14 +797,19 @@ class MazeExplorer:
             points_by_color = self.color_detector.detect(
                 rgb_img, depth_img, self.pose)
             for color, obj in (("blue", self.blue_object), ("yellow", self.yellow_object)):
-                oxs, oys = points_by_color[color]
-                # Reject this frame's batch if it disagrees with the object's
-                # already-established position -- guards against odometry
-                # drift smearing the marked footprint over a long run (see
-                # colored_objects.py -- TrackedObject.filter_consistent()).
-                # oxs, oys = obj.filter_consistent(oxs, oys)
-                self.grid.mark_object_world(color, oxs, oys)
-                obj.update_detection(oxs, oys, self.now)
+                hit_xs, hit_ys, free_xs, free_ys = points_by_color[color]
+                # Fold this frame into the colour's log-odds map, EXACTLY like
+                # the lidar: matching pixels are positive evidence, visible
+                # non-matching pixels are negative evidence -- so a false
+                # detection here is un-marked the next time the camera sees
+                # that spot and disagrees (see occupancy_grid.py --
+                # update_object_observation()).
+                self.grid.update_object_observation(
+                    color, hit_xs, hit_ys, free_xs, free_ys)
+                # Re-derive the object's position/seen flags FROM the grid we
+                # just updated -- the grid is the single self-correcting source
+                # of truth (see colored_objects.py -- update_from_grid()).
+                obj.update_from_grid(self.grid, self.now)
 
             # Depth-only obstacle detection -- catches obstacles the lidar's
             # fixed-height sweep can't see at all (see depth_obstacle.py).

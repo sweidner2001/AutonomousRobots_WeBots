@@ -25,19 +25,23 @@ WHY A SEPARATE CLASS FOR TRACKING STATE?
 --------------------------------------------
 Detection happens every few camera frames and is noisy (a single frame might
 see the object from a slightly different angle, or not at all).  TrackedObject
-smooths this out with a running average of all detections so far, and gives
-the rest of the code (explorer.py, a future "go fetch the object" mission
-phase) one simple place to ask "where is the blue object, and can I get
-there?" instead of re-deriving that from raw detections every time.
+reads its position straight from the occupancy grid's self-correcting object
+mask (via update_from_grid), so noise and false positives are smoothed and
+un-done by the same log-odds machinery the lidar wall map uses.  It gives the
+rest of the code (explorer.py, the "go fetch the object" mission phase) one
+simple place to ask "where is the blue object, and can I get there?" instead
+of re-deriving that from the grid every time.
 
 HOW BLUE/YELLOW OBJECTS BECOME OBSTACLES
 ----------------------------------------------
-Exactly like the green floor hazards: every detected point is stamped into
-OccupancyGrid.mark_object_world(colour, xs, ys), which PathPlanner.build_nav_grid()
-folds into `blocked` (inflated, same safety margin as walls).  A*, the flood
-fill, and frontier detection therefore automatically route the robot around a
-tracked object -- "we cannot drive through them" falls out of the existing
-pipeline for free.
+Like the lidar wall map: every camera frame is folded into a per-colour
+log-odds grid via OccupancyGrid.update_object_observation(colour, hits, frees),
+which PathPlanner.build_nav_grid() thresholds and folds into `blocked`
+(inflated, same safety margin as walls).  A*, the flood fill, and frontier
+detection therefore automatically route the robot around a tracked object --
+"we cannot drive through them" falls out of the existing pipeline for free.
+Because it is log-odds (not a sticky mask), a false detection is ERASED once
+the camera looks at that spot again and no longer sees the colour.
 
 WHY NO GROUND-PLANE FILTER (UNLIKE floor_hazard.py)?
 --------------------------------------------------------
@@ -76,45 +80,42 @@ class TrackedObject:
         self.reachable   = False  # None = not checked yet; True/False once checked
         self.reached     = False # True once the robot has gotten close to it
 
-        self.num_detections = 0    # how many individual points have contributed
         self.last_seen_time  = None  # simulation time (s) of the most recent detection
 
     # ------------------------------------------------------------------ #
-    def update_detection(self, xs, ys, now):
-        """Fold a new batch of detected world points into the running estimate.
+    def update_from_grid(self, grid, now):
+        """Refresh this object's position estimate from the occupancy grid's
+        self-correcting object mask.
 
-        Uses a running average weighted by how many points have already
-        contributed, so a single noisy frame cannot suddenly yank the
-        estimated position -- each new frame's centroid nudges the estimate
-        rather than replacing it outright.
+        The grid's per-colour log-odds map is the single source of truth for
+        WHERE the object is: it gains positive evidence from matching pixels
+        and negative evidence from visible non-matching pixels every frame, so
+        a false detection decays away on its own (see
+        OccupancyGrid.update_object_observation).  We therefore take the
+        centroid of the currently-believed cells rather than keeping a
+        separate running average that could never forget a bad point.
+
+        `seen`/`reachable`/`world_xy` all follow the grid: if every cell has
+        decayed back below threshold the object is no longer believed present,
+        so world_xy becomes None and both flags reset -- which correctly stops
+        the mission FSM from chasing (or dereferencing) a target that turned
+        out to be a false positive.  `reached` stays sticky: once the robot
+        has physically arrived, that fact is real regardless of later camera
+        noise.
 
         Args:
-            xs, ys : 1-D NumPy arrays of world coordinates detected THIS frame
-                     (may be empty -- a normal "not visible this frame" case).
-            now    : current simulation time (s).
+            grid : OccupancyGrid, queried via object_centroid(color).
+            now  : current simulation time (s).
         """
-        n_new = len(xs)
-        if n_new == 0:
-            return
-
-        cx, cy = float(np.mean(xs)), float(np.mean(ys))
-
-        if self.world_xy is None:
-            self.world_xy = (cx, cy)
+        centroid = grid.object_centroid(self.color_name)
+        self.world_xy = centroid
+        if centroid is None:
+            # No cell is believed to hold this colour any more -> forget it.
+            self.seen      = False
+            self.reachable = False
         else:
-            # Weighted running average: old estimate keeps its accumulated
-            # weight (num_detections), the new centroid counts as n_new points.
-            n_old = self.num_detections
-            total = n_old + n_new
-            ox, oy = self.world_xy
-            self.world_xy = (
-                (ox * n_old + cx * n_new) / total,
-                (oy * n_old + cy * n_new) / total,
-            )
-
-        self.num_detections += n_new
-        self.seen             = True
-        self.last_seen_time   = now
+            self.seen           = True
+            self.last_seen_time = now
 
 
 
@@ -171,9 +172,9 @@ class TrackedObject:
         pos = "None" if self.world_xy is None else (
             "(%.2f, %.2f)" % self.world_xy
         )
-        return ("TrackedObject(%s: seen=%s pos=%s reachable=%s reached=%s n=%d)"
+        return ("TrackedObject(%s: seen=%s pos=%s reachable=%s reached=%s)"
                 % (self.color_name, self.seen, pos, self.reachable,
-                   self.reached, self.num_detections))
+                   self.reached))
 
 
 # ============================================================================
@@ -212,11 +213,15 @@ class ColorObjectDetector:
             pose      : (x, y, theta) robot pose from Odometry.
 
         Returns:
-            dict {"blue": (xs, ys), "yellow": (xs, ys)} -- world coordinates
-            of every matching point this frame (arrays may be empty).
+            dict {colour: (hit_xs, hit_ys, free_xs, free_ys)} for each of
+            "blue" and "yellow".  `hit_*` are the world coords of pixels that
+            MATCHED the colour; `free_*` are the world coords of pixels that
+            had valid depth (so were genuinely observed) but did NOT match --
+            the negative evidence that lets a past false positive decay away.
+            Any of the arrays may be empty.
         """
-        empty = {"blue": (np.empty(0), np.empty(0)),
-                  "yellow": (np.empty(0), np.empty(0))}
+        empty = {"blue":   (np.empty(0), np.empty(0), np.empty(0), np.empty(0)),
+                  "yellow": (np.empty(0), np.empty(0), np.empty(0), np.empty(0))}
 
         us, vs = self._us, self._vs
 
@@ -253,9 +258,13 @@ class ColorObjectDetector:
             ("yellow", (C.YELLOW_HUE_MIN, C.YELLOW_HUE_MAX, C.YELLOW_SAT_MIN, C.YELLOW_VAL_MIN)),
         ):
             match = (hue >= h_min) & (hue <= h_max) & (sat >= s_min) & (val >= v_min)
-            if np.any(match):
-                result[name] = (world_xs[match], world_ys[match])
-            else:
-                result[name] = (np.empty(0), np.empty(0))
+            # Every valid pixel is either a "hit" (this colour) or a "free"
+            # observation (visible, but some other colour).  Both are returned:
+            # OccupancyGrid.update_object_observation() uses the hits as
+            # positive evidence and the free points as negative evidence.
+            result[name] = (
+                world_xs[match],  world_ys[match],
+                world_xs[~match], world_ys[~match],
+            )
 
         return result

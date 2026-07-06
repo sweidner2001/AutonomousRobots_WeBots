@@ -28,7 +28,7 @@ so that grid cell [row=nrows/2, col=ncols/2] corresponds to (0, 0).
 UNITS:  metres (m), radians (rad), seconds (s).
 """
 
-VIZALIZATION_NAV_GRID = True
+VIZALIZATION_NAV_GRID = False
 
 # ===========================================================================
 # Robot physical dimensions  (from the Rosbot 2 PROTO file in Webots)
@@ -336,6 +336,21 @@ OBJECT_INFLATE_CELLS = INFLATE_RADIUS_CELLS
 
 # Distance within which the robot counts as having "reached" a tracked object.
 OBJECT_REACH_TOL = 0.25   # m
+
+# --- Colour-object log-odds (Bayesian inverse sensor model, like the lidar) --
+#
+# The camera's colour detection is treated EXACTLY like the lidar wall map:
+# every camera frame gives POSITIVE evidence (this cell looked blue/yellow)
+# AND NEGATIVE evidence (this cell was clearly visible but was NOT that
+# colour).  So a false detection is erased the next time the camera looks at
+# that spot and disagrees -- see occupancy_grid.py: update_object_observation().
+#
+# These are kept SEPARATE from the lidar's L_FREE/L_OCC because colour
+# detection is noisier and you will usually want to tune it on its own.
+L_OBJ_OCC    =  1.00  # log-odds added   for a cell that matched the colour.
+L_OBJ_FREE   = -0.50  # log-odds added   for a visible cell that did NOT match.
+L_OBJ_CLAMP  =  8.0   # clamp object log-odds to +/- this (numerical safety).
+P_OBJ_THRESH =  0.60  # a cell with p >= this is treated as holding the object.
 
 # How close (in world metres) a lidar-detected wall cell must be to a raw
 # camera colour detection before we treat it as the SAME physical object
