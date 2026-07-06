@@ -45,6 +45,43 @@ floor_hazard.py only wants points that lie FLAT ON THE FLOOR (green tiles).
 Blue/yellow objects are assumed to be upright items (boxes, pillars, etc.)
 that can appear at any height in the image, so we scan the FULL frame
 instead of only the rows below the horizon.
+
+WHY CROSS-CHECK AGAINST THE LIDAR SCAN?
+--------------------------------------------
+The camera and the lidar are two INDEPENDENT sensors, each with its own
+small geometric error (mount height/tilt/offset for the camera -- see
+config.py's long comment on what can and can't be read live from Webots).
+Occasionally the camera's computed position for a coloured point ends up
+slightly FARTHER than a wall the lidar has already mapped in roughly the
+same direction.  That is a physically impossible scene: a depth camera
+(just like a lidar) can only ever measure the NEAREST surface along a
+given ray -- nothing can be optically detected behind a solid wall.
+
+When this mismatch happens, it is essentially always the camera's multi-
+step pipeline (back-projection + registration + tilt-correction, each with
+its own small calibration constant) that is slightly off, not the lidar's
+single, direct range reading.  ColorObjectDetector._clamp_to_lidar() fixes
+this by pulling the point inward along its own viewing direction until it
+sits exactly at the lidar-confirmed distance -- i.e. the detected object
+gets "snapped" onto the wall the lidar already found there, rather than
+floating on the far side of it.  Points where the lidar sees nothing in
+that direction (inf, out of range, or just outside the lidar's FoV) are
+left untouched, since the camera may be seeing something above or below
+the lidar's flat 2-D scanning plane that the lidar genuinely cannot detect.
+
+ONLY TRUST SMALL CORRECTIONS -- DISCARD THE REST
+------------------------------------------------------
+A "nearby" lidar ray within the angular tolerance is not guaranteed to be
+looking at the SAME physical surface as the camera point -- it could be a
+coincidental angular alignment with a completely different, unrelated wall,
+or genuine sensor noise.  The size of the gap is the tell: a small gap
+(a few centimetres) is consistent with ordinary camera calibration drift,
+so it's safe to correct.  A LARGE gap (LIDAR_CROSS_CHECK_MAX_GAP or more)
+means the two readings almost certainly aren't describing the same point at
+all -- forcibly relocating the camera point onto that lidar reading would
+just replace one wrong position with a different, unrelated wrong position.
+In that case the point is DISCARDED from this frame entirely instead of
+being clamped.
 """
 
 import math
@@ -203,13 +240,21 @@ class ColorObjectDetector:
         self._us, self._vs = sample_pixel_grid(self.intr, C.CAMERA_SAMPLE_STRIDE)
 
     # ------------------------------------------------------------------ #
-    def detect(self, rgb_img, depth_img, pose):
+    def detect(self, rgb_img, depth_img, pose, lidar_ranges=None, lidar_bearings=None):
         """Return world-frame points for each tracked colour this frame.
 
         Args:
-            rgb_img   : (H, W, 3) uint8 array from Robot.read_camera_rgb().
-            depth_img : (H, W) float32 array (metres) from Robot.read_camera_depth().
-            pose      : (x, y, theta) robot pose from Odometry.
+            rgb_img        : (H, W, 3) uint8 array from Robot.read_camera_rgb().
+            depth_img      : (H, W) float32 array (m) from Robot.read_camera_depth().
+            pose           : (x, y, theta) robot pose from Odometry.
+            lidar_ranges   : optional, the SAME control step's lidar range
+                              array (Robot.read_lidar()).  When given, used
+                              to sanity-check camera points against the
+                              lidar scan -- see module docstring
+                              ("WHY CROSS-CHECK AGAINST THE LIDAR SCAN?").
+            lidar_bearings : optional, matching per-ray bearing array
+                              (Robot.bearings). Required together with
+                              lidar_ranges for the cross-check to run.
 
         Returns:
             dict {"blue": (xs, ys), "yellow": (xs, ys)} -- world coordinates
@@ -243,6 +288,20 @@ class ColorObjectDetector:
         # (computed once, then filtered per colour below)
         forward_lvl, _drop_lvl = tilt_correct(y_cam, z_cam, C.CAMERA_TILT_RAD)
         right_lvl = x_cam
+
+        # ---- Step 4b: cross-check against the lidar scan --------------------
+        # Pull in any point that claims to be behind a lidar-confirmed wall
+        # in roughly the same direction -- see module docstring.  Points
+        # whose gap to the lidar is too large to trust are dropped entirely.
+        if lidar_ranges is not None and lidar_bearings is not None:
+            forward_lvl, right_lvl, keep = self._clamp_to_lidar(
+                forward_lvl, right_lvl, lidar_ranges, lidar_bearings
+            )
+            if not np.any(keep):
+                return empty
+            forward_lvl, right_lvl = forward_lvl[keep], right_lvl[keep]
+            hue, sat, val = hue[keep], sat[keep], val[keep]
+
         world_xs, world_ys = camera_local_to_world(
             forward_lvl, right_lvl, pose, C.CAMERA_FORWARD_M, C.CAMERA_LATERAL_M
         )
@@ -259,3 +318,88 @@ class ColorObjectDetector:
                 result[name] = (np.empty(0), np.empty(0))
 
         return result
+
+    # ------------------------------------------------------------------ #
+    # Lidar cross-check
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _clamp_to_lidar(forward_lvl, right_lvl, lidar_ranges, lidar_bearings):
+        """Pull camera points inward so they never claim to be BEHIND a wall
+        the lidar has already confirmed in the same direction -- or, if the
+        mismatch is too large to trust, discard the point entirely.
+
+        See the module docstring ("WHY CROSS-CHECK AGAINST THE LIDAR SCAN?"
+        and "ONLY TRUST SMALL CORRECTIONS -- DISCARD THE REST") for the full
+        reasoning.  In short, for each candidate point:
+          1. Find the nearest-bearing lidar ray(s) within LIDAR_CROSS_CHECK_ANGLE.
+          2. If the lidar saw something clearly CLOSER (by more than
+             LIDAR_CROSS_CHECK_MARGIN) than the camera's computed range:
+               a. If the gap is small (<= LIDAR_CROSS_CHECK_MAX_GAP), trust
+                  it -- rescale the point so its range exactly matches the
+                  lidar's (ordinary calibration drift, safe to correct).
+               b. If the gap is large, DISCARD the point -- the "nearby"
+                  lidar ray is probably a different, unrelated surface, not
+                  the same one the camera is looking at.
+        Points with no nearby lidar reading at all (blind spot, out of
+        range, or genuinely above/below the lidar's flat scan plane) are
+        left completely untouched -- the camera may be seeing something the
+        lidar simply cannot.
+
+        Args:
+            forward_lvl, right_lvl : camera-local (tilt-corrected) forward/
+                                       right offsets for each candidate point.
+            lidar_ranges            : lidar range array (metres, inf = no hit).
+            lidar_bearings          : matching per-ray bearing array (rad),
+                                       same sign convention as forward_lvl/
+                                       right_lvl (positive right_lvl = to the
+                                       robot's right = NEGATIVE bearing).
+
+        Returns:
+            (forward_lvl, right_lvl, keep) -- corrected forward/right arrays
+            (same shape as input) and a boolean `keep` mask marking which
+            points survived (False = discarded as unreliable).
+        """
+        n = len(forward_lvl)
+        keep_all = np.ones(n, dtype=bool)
+        if n == 0:
+            return forward_lvl, right_lvl, keep_all
+
+        # Range/bearing of each candidate point, ignoring the small camera
+        # mount offset (negligible next to typical detection distances) --
+        # this only needs to be "roughly in the same direction", not exact.
+        body_range   = np.hypot(forward_lvl, right_lvl)
+        body_bearing = np.arctan2(-right_lvl, forward_lvl)
+
+        finite = np.isfinite(lidar_ranges)
+        if not np.any(finite):
+            return forward_lvl, right_lvl, keep_all
+        lr = np.asarray(lidar_ranges)[finite]
+        lb = np.asarray(lidar_bearings)[finite]
+
+        # For each candidate, find lidar rays within the angular tolerance
+        # and take the SHORTEST of their ranges (the nearest confirmed
+        # surface in that rough direction).
+        diffs  = np.abs(body_bearing[:, None] - lb[None, :])   # (n, m)
+        within = diffs <= C.LIDAR_CROSS_CHECK_ANGLE
+        has_match = within.any(axis=1)
+        if not np.any(has_match):
+            return forward_lvl, right_lvl, keep_all
+
+        masked_ranges = np.where(within, lr[None, :], np.inf)
+        nearest_lidar_range = masked_ranges.min(axis=1)
+        gap = body_range - nearest_lidar_range
+
+        needs_correction = has_match & (gap > C.LIDAR_CROSS_CHECK_MARGIN)
+        if not np.any(needs_correction):
+            return forward_lvl, right_lvl, keep_all
+
+        trustworthy = gap <= C.LIDAR_CROSS_CHECK_MAX_GAP
+        clamp   = needs_correction & trustworthy
+        discard = needs_correction & ~trustworthy
+
+        ratio = np.ones(n, dtype=np.float32)
+        ratio[clamp] = nearest_lidar_range[clamp] / body_range[clamp]
+
+        keep_all[discard] = False
+
+        return forward_lvl * ratio, right_lvl * ratio, keep_all

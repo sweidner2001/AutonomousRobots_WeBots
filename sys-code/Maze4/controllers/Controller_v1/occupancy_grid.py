@@ -179,6 +179,78 @@ class OccupancyGrid:
         return self.object_masks["blue"] | self.object_masks["yellow"]
 
     # ---------------------------------------------------------------------- #
+    # Reconciling the lidar wall map with camera-detected objects
+    # ---------------------------------------------------------------------- #
+    def object_surface_mask(self, color=None, radius_cells=None):
+        """Boolean mask: occupied (wall) cells that are really a TRACKED
+        OBJECT'S OWN SURFACE, not a separate obstacle.
+
+        WHY THIS EXISTS
+        -----------------
+        A tracked blue/yellow object is a solid obstacle, so the lidar
+        legitimately reports "wall" at the exact same place the camera
+        reports the object's colour.  Most of the time this overlap is
+        harmless -- both masks end up blocked either way (see
+        PathPlanner.build_nav_grid()).  But it causes two real problems
+        if left unhandled:
+          1. VISUALISATION (mapviz.py): the object renders as a patchwork
+             of black (wall) and colour instead of one clean blob.
+          2. PATH PLANNING (planner.py): when the robot plans a route
+             THAT ENDS AT the object, the object's own wall-cells would
+             block its own destination -- the goal would look
+             unreachable even while the robot stands right next to it.
+
+        HOW IT WORKS
+        -------------
+        Grows the object mask outward by `radius_cells`, 4-CONNECTED
+        steps only (up/down/left/right, no diagonals) via
+        grow_mask_4connected() -- a small, BOUNDED region, NOT a flood
+        fill that follows connectivity through the whole wall network
+        (see that function's docstring for why the distinction matters:
+        maze walls are typically one single connected structure, so an
+        unbounded flood fill from the object would eventually swallow
+        the entire thing).  Any occ_mask() cell inside that small region
+        is assumed to be the object's own surface.
+
+        Args:
+            color        : "blue", "yellow", or None (default) to use
+                            BOTH colours combined (any_object_mask()).
+                            Path planning doesn't care which colour it
+                            is, only that it's an object; rendering
+                            needs the distinction to pick the right tint.
+            radius_cells : how far to grow, in 4-connected cells.
+                            Defaults to config.OBJECT_MERGE_RADIUS_CELLS.
+
+        Returns:
+            np.ndarray bool -- True where occ_mask() is True AND the cell
+            is within radius_cells of the requested tracked object(s).
+        """
+        if radius_cells is None:
+            radius_cells = C.OBJECT_MERGE_RADIUS_CELLS
+        seed = self.any_object_mask() if color is None else self.object_mask(color)
+        grown = grow_mask_4connected(seed, radius_cells)
+        return grown & self.occ_mask()
+
+    def occ_mask_excluding_objects(self, radius_cells=None):
+        """occ_mask(), with cells that are a tracked object's own surface
+        removed (see object_surface_mask()).
+
+        Used when planning a path THAT ENDS AT a tracked object, so the
+        object's own surface doesn't block its own destination.
+        occ_mask() itself is left completely untouched -- this returns a
+        derived VIEW built fresh each call, not a modification of the map.
+
+        Args:
+            radius_cells : passed through to object_surface_mask().
+
+        Returns:
+            np.ndarray bool -- occ_mask() minus object-surface cells.
+        """
+        result = self.occ_mask().copy()
+        result[self.object_surface_mask(radius_cells=radius_cells)] = False
+        return result
+
+    # ---------------------------------------------------------------------- #
     # Camera-based hazard / object marking
     # ---------------------------------------------------------------------- #
     def mark_hazard_world(self, xs, ys):
@@ -314,6 +386,48 @@ class OccupancyGrid:
     def save(self, npy_path):
         """Save the raw log-odds array to a NumPy binary file."""
         np.save(npy_path, self.log)
+
+
+# ============================================================================
+# 4-connected bounded mask growth
+# ============================================================================
+def grow_mask_4connected(mask, radius_cells):
+    """Grow a boolean mask outward by `radius_cells`, 4-connected steps
+    (up/down/left/right only -- no diagonals).
+
+    Used by OccupancyGrid.object_surface_mask() to find wall cells that
+    are really a tracked object's own surface (see that method's
+    docstring for the full story).
+
+    WHY A SMALL, FIXED RADIUS -- NOT A FLOOD FILL
+    --------------------------------------------------
+    Deliberately a bounded number of steps, not an open-ended flood fill
+    that follows connectivity through an arbitrary region.  Maze walls
+    are typically ONE single connected network -- an unbounded flood
+    fill starting from a small seed (e.g. a detected coloured object
+    sitting against a wall) would eventually reach and swallow the
+    ENTIRE wall structure.  Growing by a small fixed radius instead only
+    reaches cells that are genuinely close to the seed, regardless of
+    what they happen to be connected to.
+
+    Args:
+        mask         : boolean array to grow.
+        radius_cells : how many cells to grow, in each of the 4 directions.
+
+    Returns:
+        np.ndarray bool -- the grown mask (same shape as input).
+    """
+    if radius_cells <= 0 or not mask.any():
+        return mask.copy()
+    out = mask.copy()
+    for _ in range(radius_cells):
+        grown = out.copy()
+        grown[:-1, :] |= out[1:,  :]
+        grown[1:,  :] |= out[:-1, :]
+        grown[:, :-1] |= out[:,  1:]
+        grown[:,  1:] |= out[:, :-1]
+        out = grown
+    return out
 
 
 # ============================================================================

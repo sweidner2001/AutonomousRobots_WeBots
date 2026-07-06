@@ -100,14 +100,25 @@ class PathPlanner:
         return blocked
     
     def get_block_cells_for_target_navigation(self, grid):
-        hazard_blocked = self._inflate(grid.hazard_mask(),    C.HAZARD_INFLATE_CELLS)
+        """Blocked-cell mask used when navigating TO a tracked object.
 
-        object_mask_for_delete_frontiers = self._inflate(grid.any_object_mask(), C.OBJECT_INFLATE_CELLS + 1)
-        occ_mask_delete_lidar_scan_to_target = grid.occ_mask() & object_mask_for_delete_frontiers
-        nav_to_target_occ_mask = grid.occ_mask().copy()
-        nav_to_target_occ_mask[occ_mask_delete_lidar_scan_to_target] = False
-        wall_blocked  = self._inflate(nav_to_target_occ_mask, C.INFLATE_RADIUS_CELLS)
-        wall_blocked[occ_mask_delete_lidar_scan_to_target] = False
+        Unlike get_block_cells_for_frontier_exploration(), this EXCLUDES
+        wall cells that are really the object's own surface (see
+        OccupancyGrid.object_surface_mask() / occ_mask_excluding_objects()
+        for the full "why" -- in short: the lidar legitimately sees the
+        object too, and if we didn't exclude those cells, the object's
+        own surface would block its own destination, making it look
+        unreachable even when the robot is standing right next to it).
+        """
+        hazard_blocked = self._inflate(grid.hazard_mask(), C.HAZARD_INFLATE_CELLS)
+
+        nav_occ_mask = grid.occ_mask_excluding_objects()
+        surface      = grid.object_surface_mask()
+
+        wall_blocked = self._inflate(nav_occ_mask, C.INFLATE_RADIUS_CELLS)
+        # Force the object's own surface open even if inflation from a
+        # nearby, unrelated real wall would otherwise re-cover it.
+        wall_blocked[surface] = False
 
         blocked = wall_blocked | hazard_blocked
         return blocked

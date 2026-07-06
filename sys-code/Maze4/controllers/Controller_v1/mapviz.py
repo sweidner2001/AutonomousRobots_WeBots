@@ -175,6 +175,20 @@ class MapViz:
         on top of a cell that also reads as "free" from the lidar (the
         camera sees things the lidar's flat 2-D scan plane cannot).
 
+        WHY ALSO PAINT NEARBY WALL CELLS THE OBJECT'S COLOUR?
+        --------------------------------------------------------
+        A tracked object is a SOLID obstacle, so the lidar legitimately
+        detects it too -- some of "its" cells end up in the wall mask
+        (from the lidar) instead of the object mask (from the camera),
+        making the object render as a patchwork of black and colour
+        instead of one clean blob.  OccupancyGrid.object_surface_mask()
+        identifies those wall cells (see its docstring for the full
+        reasoning and why it uses a small, BOUNDED 4-connected growth
+        rather than an unbounded flood fill).  This is the SAME method
+        planner.py uses to exclude those cells from blocking a path to
+        the object -- one shared source of truth for "is this wall cell
+        really the object" instead of two diverging implementations.
+
         Returns:
             np.ndarray shape (nrows, ncols, 3), dtype float32, values [0, 1].
         """
@@ -195,11 +209,19 @@ class MapViz:
         # Override camera-detected hazard cells with bright green.
         img[self.grid.hazard_mask()] = (0.1, 0.9, 0.1)
 
-        # Override camera-detected tracked-object cells with their colour.
-        img[self.grid.object_mask("blue")]   = (0.15, 0.35, 0.95)
-        img[self.grid.object_mask("yellow")] = (0.95, 0.85, 0.10)
+        # Override camera-detected tracked-object cells -- AND nearby wall
+        # cells that are really the same object's surface -- with their colour.
+        blue_mask   = self.grid.object_mask("blue")
+        yellow_mask = self.grid.object_mask("yellow")
+        blue_surface   = self.grid.object_surface_mask(color="blue")
+        yellow_surface = self.grid.object_surface_mask(color="yellow")
+
+        img[blue_mask   | blue_surface]   = (0.15, 0.35, 0.95)
+        img[yellow_mask | yellow_surface] = (0.95, 0.85, 0.10)
 
         return img
+
+
 
     # ---------------------------------------------------------------------- #
     def update(self, pose, scan_xy=None, world_path=None, target_xy=None):

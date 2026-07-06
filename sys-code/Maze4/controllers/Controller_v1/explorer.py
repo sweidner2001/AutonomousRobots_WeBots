@@ -775,7 +775,13 @@ class MazeExplorer:
             xs, ys = self.hazard_detector.detect(rgb_img, depth_img, self.pose)
             self.grid.mark_hazard_world(xs, ys)
 
-            points_by_color = self.color_detector.detect(rgb_img, depth_img, self.pose)
+            # Pass the SAME control step's lidar scan so the detector can
+            # reject any coloured point that would sit behind a wall the
+            # lidar has already confirmed in the same direction (see
+            # colored_objects.py -- ColorObjectDetector._clamp_to_lidar()).
+            points_by_color = self.color_detector.detect(
+                rgb_img, depth_img, self.pose, self.ranges, self.robot.bearings
+            )
             for color, obj in (("blue", self.blue_object), ("yellow", self.yellow_object)):
                 oxs, oys = points_by_color[color]
                 self.grid.mark_object_world(color, oxs, oys)

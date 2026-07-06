@@ -84,8 +84,8 @@ LIDAR_ANGLE_OFFSET = 0.0  # rad.  Extra rotation if the lidar is mounted
 GRID_RESOLUTION = 0.04   # m per cell side.  Each cell is a 5 cm x 5 cm square.
                           # Smaller -> finer map, but more memory and slower.
 
-GRID_WIDTH_M  = 13.0     # Total map width in metres.  With 0.05 m/cell
-GRID_HEIGHT_M = 13.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
+GRID_WIDTH_M  = 12.0     # Total map width in metres.  With 0.05 m/cell
+GRID_HEIGHT_M = 12.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
 
 # Place the grid origin so that world (0,0) falls exactly in the middle.
 GRID_ORIGIN_X = -GRID_WIDTH_M  / 2.0   # world x of grid column 0
@@ -318,6 +318,38 @@ OBJECT_INFLATE_CELLS = INFLATE_RADIUS_CELLS
 
 # Distance within which the robot counts as having "reached" a tracked object.
 OBJECT_REACH_TOL = 0.25   # m
+
+# Display-only: how many cells around a detected object to recolour if they
+# are ALSO wall cells (the lidar legitimately detects the object's own solid
+# surface too -- see mapviz.py's _render_rgb() docstring).  Keep this SMALL:
+# maze walls are typically one connected network, so a large radius here
+# would bleed the object's colour along the entire connected wall.
+OBJECT_MERGE_RADIUS_CELLS = 4
+
+# --- Lidar cross-check (fixes camera/lidar geometric mismatches) -----------
+# The depth camera and the lidar are two independent sensors, each with its
+# own small calibration/mount-geometry error (see camera_geometry.py).  If a
+# detected coloured point's computed position ends up FARTHER than a wall
+# the lidar has already confirmed in roughly the same direction, that is a
+# physically impossible scene (nothing can be seen optically behind a solid
+# wall) -- it means the camera geometry, not the lidar, is slightly off.
+# ColorObjectDetector._clamp_to_lidar() corrects exactly this case by pulling
+# the point inward until it sits at the lidar-confirmed distance.
+LIDAR_CROSS_CHECK_ANGLE  = 0.04  # 07 rad (~4 deg).  How close two bearings must
+                                    # be to be considered "the same direction".
+LIDAR_CROSS_CHECK_MARGIN = 0.08  # m.  Only clamp if the camera point is at
+                                    # least this much farther than the lidar
+                                    # hit -- avoids flip-flopping on sensor noise.
+LIDAR_CROSS_CHECK_MAX_GAP = 0.40  # m.  Only trust the correction (and clamp)
+                                    # when the gap between the camera point and
+                                    # the lidar hit is within this distance.
+                                    # A LARGER gap means the "nearby" lidar ray
+                                    # is probably not the same physical surface
+                                    # at all -- just a coincidental angular
+                                    # match, or noise -- so the point is
+                                    # DISCARDED entirely instead of being
+                                    # forcibly relocated to an unrelated
+                                    # lidar reading.
 
 # ===========================================================================
 # Mission flags
