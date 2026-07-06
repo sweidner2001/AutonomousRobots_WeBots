@@ -104,6 +104,7 @@ from Maze4.controllers.Controller_v1.mapviz         import MapViz
 from Maze4.controllers.Controller_v1.mission        import Mission
 from Maze4.controllers.Controller_v1.floor_hazard   import FloorHazardDetector
 from Maze4.controllers.Controller_v1.colored_objects import ColorObjectDetector, TrackedObject
+from Maze4.controllers.Controller_v1.depth_obstacle import DepthObstacleDetector
 
 
 class Explorer:
@@ -671,6 +672,15 @@ class MazeExplorer:
             self.robot.camera_depth_min_range,
             self.robot.camera_depth_max_range,
         )
+        # Finds obstacles the lidar's fixed-height sweep can't see at all
+        # (see depth_obstacle.py) -- colour-agnostic, depth-only detection.
+        self.depth_obstacle_detector = DepthObstacleDetector(
+            self.robot.camera_width,
+            self.robot.camera_height,
+            self.robot.camera_fov,
+            self.robot.camera_depth_min_range,
+            self.robot.camera_depth_max_range,
+        )
         # One TrackedObject instance per colour -- see colored_objects.py for
         # what each field (seen / reachable / reached / world_xy) means.
         self.blue_object   = TrackedObject("blue")
@@ -795,6 +805,16 @@ class MazeExplorer:
                 # oxs, oys = obj.filter_consistent(oxs, oys)
                 self.grid.mark_object_world(color, oxs, oys)
                 obj.update_detection(oxs, oys, self.now)
+
+            # Depth-only obstacle detection -- catches obstacles the lidar's
+            # fixed-height sweep can't see at all (see depth_obstacle.py).
+            # Reuses the SAME depth_img already read above; feeds straight
+            # into the SAME log-odds map the lidar uses, via integrate_scan_rgbd().
+            # obstacle_ranges, obstacle_bearings = self.depth_obstacle_detector.detect(depth_img)
+            # self.grid.integrate_scan_rgbd(
+            #     self.pose[0], self.pose[1], self.pose[2],
+            #     obstacle_ranges, obstacle_bearings
+            # )
 
         # Update "reached" every step -- cheap distance check, no reason to
         # wait for the next camera frame.

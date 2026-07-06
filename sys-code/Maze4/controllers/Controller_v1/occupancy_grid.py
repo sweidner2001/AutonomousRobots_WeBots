@@ -239,6 +239,7 @@ class OccupancyGrid:
             np.ndarray bool -- raw camera detections UNION any nearby
             lidar-confirmed wall cells.
         """
+        return self.object_masks[color]
         if max_distance_m is None:
             max_distance_m = C.OBJECT_WALL_MATCH_DISTANCE_M
         radius_cells = max(1, int(round(max_distance_m / self.res)))
@@ -350,6 +351,73 @@ class OccupancyGrid:
 
             # Update all cells along the ray using Bresenham's line algorithm.
             self._ray(c0, r0, c1, r1, hit)
+
+    # ---------------------------------------------------------------------- #
+    # Scan integration  (RGB-D camera -- catches obstacles the lidar misses)
+    # ---------------------------------------------------------------------- #
+    def integrate_scan_rgbd(self, x, y, theta, ranges, bearings):
+        """Fuse camera-detected obstacle points into the occupancy map.
+
+        WHY THIS EXISTS
+        ------------------
+        The lidar only sweeps ONE fixed horizontal plane at a fixed height.
+        An obstacle that sits entirely above or below that exact height
+        (a low curb, a raised sill, a shelf edge, a thin rail) is completely
+        invisible to integrate_scan() -- the beam passes straight over or
+        under it, the map shows FREE space there, and the robot would
+        happily drive straight into something it never "saw".  The RGB-D
+        depth camera looks at a much taller vertical slice of the world in
+        every frame, so it can catch exactly these lidar-blind obstacles.
+
+        See depth_obstacle.py (DepthObstacleDetector) for HOW candidate
+        obstacle points are found: a simple, colour-agnostic heuristic
+        that looks for small patches of near-CONSTANT depth (a flat,
+        camera-facing surface) that are clearly not part of the floor.
+        That detector reduces the raw depth image down to exactly the
+        same (range, bearing) representation the lidar already uses, so
+        this method can mark cells with the SAME Bresenham ray-tracing +
+        log-odds update as integrate_scan() -- reusing _ray() directly.
+
+        HOW THIS DIFFERS FROM integrate_scan()
+        -------------------------------------------
+        Every entry passed in here is ALREADY a confirmed candidate
+        obstacle -- DepthObstacleDetector has already thrown out invalid,
+        out-of-range, and floor-level points, so (unlike integrate_scan(),
+        which must inspect every single raw lidar ray and skip the "no
+        hit" ones) every ray here is unconditionally treated as a hit.
+        Cells get folded into the EXACT SAME log-odds array the lidar
+        uses (self.log), so occ_mask(), the planner's obstacle inflation,
+        and the live map view all pick these obstacles up automatically --
+        no other module needs to change to benefit from this.
+
+        Args:
+            x, y, theta : robot pose, same convention as integrate_scan().
+            ranges      : 1-D array of ground-plane distances (m) from the
+                           camera to each candidate obstacle point.
+            bearings    : 1-D array of matching bearings (rad, robot frame,
+                           same sign convention as robot.bearings: positive
+                           = to the left).
+        """
+        if len(ranges) == 0:
+            return
+
+        # The camera sits at its own mount offset from the robot centre --
+        # see config.py CAMERA_FORWARD_M / CAMERA_LATERAL_M (the same
+        # constants floor_hazard.py and colored_objects.py use to place
+        # detected points, for the same reason).
+        sx = x + C.CAMERA_FORWARD_M * np.cos(theta) - C.CAMERA_LATERAL_M * np.sin(theta)
+        sy = y + C.CAMERA_FORWARD_M * np.sin(theta) + C.CAMERA_LATERAL_M * np.cos(theta)
+        c0, r0 = self.world_to_grid(sx, sy)
+
+        world_ang = theta + np.asarray(bearings)
+        cos_a = np.cos(world_ang)
+        sin_a = np.sin(world_ang)
+
+        for i in range(len(ranges)):
+            ex = sx + ranges[i] * cos_a[i]
+            ey = sy + ranges[i] * sin_a[i]
+            c1, r1 = self.world_to_grid(ex, ey)
+            self._ray(c0, r0, c1, r1, hit=True)
 
     def _ray(self, c0, r0, c1, r1, hit):
         """Update grid cells along a single laser ray.

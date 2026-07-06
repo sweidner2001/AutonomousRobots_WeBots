@@ -28,7 +28,7 @@ so that grid cell [row=nrows/2, col=ncols/2] corresponds to (0, 0).
 UNITS:  metres (m), radians (rad), seconds (s).
 """
 
-VIZALIZATION_NAV_GRID = False
+VIZALIZATION_NAV_GRID = True
 
 # ===========================================================================
 # Robot physical dimensions  (from the Rosbot 2 PROTO file in Webots)
@@ -292,6 +292,24 @@ CAMERA_SAMPLE_STRIDE = 6   # Only process every Nth pixel in each axis (subsampl
 
 # --- Hazard obstacle inflation ----------------------------------------------
 HAZARD_INFLATE_CELLS = INFLATE_RADIUS_CELLS  # Same safety margin as walls.
+
+# ===========================================================================
+# RGB-D depth-only obstacle detection (catches obstacles the LIDAR misses)
+# ===========================================================================
+# The lidar only sweeps one fixed horizontal plane, so anything entirely
+# above or below that height (a low curb, a raised sill, a thin rail) is
+# invisible to it.  depth_obstacle.py looks for small patches of near-
+# CONSTANT depth in the camera image (a flat, camera-facing surface -- a
+# real obstacle) that are clearly not just the ordinary floor, and feeds
+# them into OccupancyGrid.integrate_scan_rgbd() using the SAME (range,
+# bearing) + log-odds mechanism the lidar uses.
+
+# Two neighbouring sampled pixels count as "the same flat surface" if their
+# depth differs by less than this.  Too small -> real flat surfaces get
+# rejected due to ordinary depth-image quantisation; too large -> the
+# gently-curving floor near the horizon starts getting misclassified as
+# an obstacle (see depth_obstacle.py's module docstring).
+CAMERA_FLAT_TOL_M = 0.03   # m
 
 # ===========================================================================
 # Coloured target objects (blue / yellow) -- detection + tracking
