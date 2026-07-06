@@ -179,6 +179,77 @@ class OccupancyGrid:
         return self.object_masks["blue"] | self.object_masks["yellow"]
 
     # ---------------------------------------------------------------------- #
+    # Reconciling the lidar wall map with camera-detected objects
+    # ---------------------------------------------------------------------- #
+    def reconciled_object_mask(self, color, max_distance_m=None):
+        """Build a corrected object mask by reconciling the camera's raw
+        colour detections with the lidar's wall map, TRUSTING THE LIDAR
+        whenever the two disagree.
+
+        THE PROBLEM THIS SOLVES
+        --------------------------
+        The RGB-D camera and the lidar are two independent sensors.
+        Sometimes the lidar sees a wall, and the depth camera -- due to
+        its own small geometric/registration error -- reports a coloured
+        object as sitting slightly BEHIND that wall.  Since the lidar is
+        the more accurate sensor here, we treat any wall cell that is
+        close enough to a raw camera detection as being the SAME physical
+        surface as the object, not a separate, coincidentally-placed wall.
+
+        HOW IT WORKS
+        -------------
+        1. Start from self.object_masks[color] -- the raw, camera-only
+           detections.  This array is NEVER modified by this method.
+        2. Grow that mask outward by max_distance_m, 4-CONNECTED steps
+           only (up/down/left/right, no diagonals) via
+           grow_mask_4connected() -- a small, BOUNDED region.  This must
+           stay bounded: maze walls are typically one single connected
+           network, so an unbounded flood fill from the object would
+           eventually reach and swallow the entire wall structure.
+        3. Intersect that grown region with occ_mask() (the CURRENT,
+           live lidar wall map).  Any wall cell inside the small grown
+           region is assumed to be the object's own surface.
+        4. Return the union of the raw detections and those matched wall
+           cells.
+
+        WHY A CELL THAT LIDAR LATER PROVES FREE REMOVES ITSELF
+        ------------------------------------------------------------
+        This method is STATELESS: it recomputes the result FRESH from
+        occ_mask() on every call, instead of caching or storing the
+        merged result anywhere.  occ_mask() is itself a live view of the
+        log-odds grid, and the ordinary Bayesian update in
+        integrate_scan() already handles "the lidar changed its mind":
+        repeated FREE observations lower a cell's log-odds until it drops
+        back below P_OCC_THRESH, at which point occ_mask() stops
+        including it.  So if the lidar later sweeps that cell and finds
+        it free after all, it simply disappears from THIS method's
+        result on the very next call too -- "trusting the sensor and
+        deleting it" falls out automatically, with no extra bookkeeping.
+        The raw self.object_masks[color] (the camera's own direct
+        detections) is untouched either way.
+
+        Args:
+            color          : "blue" or "yellow".
+            max_distance_m : how close (world metres) a wall cell must be
+                              to a raw detection to count as the same
+                              object.  Defaults to
+                              config.OBJECT_WALL_MATCH_DISTANCE_M.
+
+        Returns:
+            np.ndarray bool -- raw camera detections UNION any nearby
+            lidar-confirmed wall cells.
+        """
+        if max_distance_m is None:
+            max_distance_m = C.OBJECT_WALL_MATCH_DISTANCE_M
+        radius_cells = max(1, int(round(max_distance_m / self.res)))
+
+        raw          = self.object_masks[color]
+        grown        = grow_mask_4connected(raw, radius_cells)
+        matched_wall = grown & self.occ_mask()
+
+        return raw | matched_wall
+
+    # ---------------------------------------------------------------------- #
     # Camera-based hazard / object marking
     # ---------------------------------------------------------------------- #
     def mark_hazard_world(self, xs, ys):
@@ -314,6 +385,48 @@ class OccupancyGrid:
     def save(self, npy_path):
         """Save the raw log-odds array to a NumPy binary file."""
         np.save(npy_path, self.log)
+
+
+# ============================================================================
+# 4-connected bounded mask growth
+# ============================================================================
+def grow_mask_4connected(mask, radius_cells):
+    """Grow a boolean mask outward by `radius_cells`, 4-connected steps
+    (up/down/left/right only -- no diagonals).
+
+    Used by OccupancyGrid.reconciled_object_mask() to find wall cells
+    that are really a tracked object's own surface (see that method's
+    docstring for the full story).
+
+    WHY A SMALL, FIXED RADIUS -- NOT A FLOOD FILL
+    --------------------------------------------------
+    Deliberately a bounded number of steps, not an open-ended flood fill
+    that follows connectivity through an arbitrary region.  Maze walls
+    are typically ONE single connected network -- an unbounded flood
+    fill starting from a small seed (e.g. a detected coloured object
+    sitting against a wall) would eventually reach and swallow the
+    ENTIRE wall structure.  Growing by a small fixed radius instead only
+    reaches cells that are genuinely close to the seed, regardless of
+    what they happen to be connected to.
+
+    Args:
+        mask         : boolean array to grow.
+        radius_cells : how many cells to grow, in each of the 4 directions.
+
+    Returns:
+        np.ndarray bool -- the grown mask (same shape as input).
+    """
+    if radius_cells <= 0 or not mask.any():
+        return mask.copy()
+    out = mask.copy()
+    for _ in range(radius_cells):
+        grown = out.copy()
+        grown[:-1, :] |= out[1:,  :]
+        grown[1:,  :] |= out[:-1, :]
+        grown[:, :-1] |= out[:,  1:]
+        grown[:,  1:] |= out[:, :-1]
+        out = grown
+    return out
 
 
 # ============================================================================

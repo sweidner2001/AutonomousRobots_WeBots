@@ -121,6 +121,8 @@ class Explorer:
     REVERSE   = "REVERSE"     # back up after getting stuck
     DONE      = "DONE"        # exploration complete
 
+
+
     def __init__(self, grid, frontier, planner, pilot):
         """
         Args:
@@ -452,6 +454,9 @@ class Explorer:
         return -C.CRUISE_SPEED, 0.0
 
 
+    def is_spin_seed_phase(self):
+        return self.phase == self.SPIN_SEED
+
 # ============================================================================
 # GoToPoint -- drive to ONE known (x, y) target (used for GO_BLUE / GO_YELLOW)
 # ============================================================================
@@ -680,8 +685,8 @@ class MazeExplorer:
         self.goto = GoToPoint(self.grid, self.planner, self.pilot)
 
         # Top-level mission state.
-        # self.mission  = Mission.EXPLORE_MAP
-        self.mission  = Mission.SEARCH_BLUE
+        self.mission  = Mission.EXPLORE_MAP
+        # self.mission  = Mission.SEARCH_BLUE
 
         # Per-step counters / state.
         self.step_i   = 0          # step counter (incremented every step)
@@ -775,9 +780,19 @@ class MazeExplorer:
             xs, ys = self.hazard_detector.detect(rgb_img, depth_img, self.pose)
             self.grid.mark_hazard_world(xs, ys)
 
-            points_by_color = self.color_detector.detect(rgb_img, depth_img, self.pose)
+            # Pass the SAME control step's lidar scan so the detector can
+            # reject any coloured point that would sit behind a wall the
+            # lidar has already confirmed in the same direction (see
+            # colored_objects.py -- ColorObjectDetector._clamp_to_lidar()).
+            points_by_color = self.color_detector.detect(
+                rgb_img, depth_img, self.pose)
             for color, obj in (("blue", self.blue_object), ("yellow", self.yellow_object)):
                 oxs, oys = points_by_color[color]
+                # Reject this frame's batch if it disagrees with the object's
+                # already-established position -- guards against odometry
+                # drift smearing the marked footprint over a long run (see
+                # colored_objects.py -- TrackedObject.filter_consistent()).
+                # oxs, oys = obj.filter_consistent(oxs, oys)
                 self.grid.mark_object_world(color, oxs, oys)
                 obj.update_detection(oxs, oys, self.now)
 
@@ -869,7 +884,7 @@ class MazeExplorer:
                                     )
         self.robot.set_velocity(v, w)
         self._refresh_object_reachability()
-        if self.explorer.finished:
+        if self.explorer.finished or self.explorer.is_spin_seed_phase() is False:
             self._advance_from_explore()
 
     def _act_search(self, target_obj, go_mission, exhausted_mission):

@@ -319,6 +319,14 @@ OBJECT_INFLATE_CELLS = INFLATE_RADIUS_CELLS
 # Distance within which the robot counts as having "reached" a tracked object.
 OBJECT_REACH_TOL = 0.25   # m
 
+# How close (in world metres) a lidar-detected wall cell must be to a raw
+# camera colour detection before we treat it as the SAME physical object
+# (see occupancy_grid.py: OccupancyGrid.reconciled_object_mask()).  The
+# lidar is trusted over the camera here -- if the lidar later finds that
+# cell to be free instead, it silently drops out of the reconciled mask on
+# its own (no separate "undo" logic needed; see that method's docstring).
+OBJECT_WALL_MATCH_DISTANCE_M = 0.16   # m (~4 cells at GRID_RESOLUTION=0.04)
+
 # ===========================================================================
 # Mission flags
 # ===========================================================================
