@@ -354,7 +354,7 @@ LIDAR_CROSS_CHECK_ANGLE  = 0.04  # 07 rad (~4 deg).  How close two bearings must
 LIDAR_CROSS_CHECK_MARGIN = 0.08  # m.  Only clamp if the camera point is at
                                     # least this much farther than the lidar
                                     # hit -- avoids flip-flopping on sensor noise.
-LIDAR_CROSS_CHECK_MAX_GAP = 0.40  # m.  Only trust the correction (and clamp)
+LIDAR_CROSS_CHECK_MAX_GAP = 0.90  # m.  Only trust the correction (and clamp)
                                     # when the gap between the camera point and
                                     # the lidar hit is within this distance.
                                     # A LARGER gap means the "nearby" lidar ray
