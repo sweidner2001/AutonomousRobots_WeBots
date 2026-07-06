@@ -554,6 +554,19 @@ class GoToPoint:
         )
 
         if path_rc is None:
+            # The direct (inflated) plan failed -- but a physical route to the
+            # object always exists; the inflation margin just sealed the gap.
+            # Fall back to parking as close to the object as is safely
+            # possible (see planner.plan_path_near_blocked_target()).
+            path_rc = self.planner.plan_path_near_blocked_target(
+                self.grid, (pose[0], pose[1]), self.target_xy
+            )
+            print("[goto] direct path to target blocked by safety margin; 'falling back' plan is applied.")
+            if path_rc is not None:
+                print("[goto] direct path sealed by safety margin; "
+                      "approaching object as close as safely possible.")
+
+        if path_rc is None:
             self._fail_count += 1
             print("[goto] no path to target (fail %d/6)." % self._fail_count)
             if self._fail_count >= 6:

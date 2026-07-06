@@ -389,7 +389,7 @@ class PathPlanner:
                 # Skip out-of-bounds, blocked, or already-closed cells.
                 if not (0 <= rr < nrows and 0 <= cc < ncols):
                     continue
-                if blocked[rr, cc] or (rr, cc) in closed:
+                if blocked[rr, cc] or (rr, cc) in closed or unknown[rr, cc]:
                     continue
 
                 # Unknown cells are more expensive to cross.
@@ -544,6 +544,102 @@ class PathPlanner:
             return None
 
         return self.astar(blocked, unknown, start_rc, goal_rc)
+
+    # ---------------------------------------------------------------------- #
+    # Fallback: get as CLOSE AS SAFELY POSSIBLE to a sealed-off target
+    # ---------------------------------------------------------------------- #
+    def _raw_blocked_for_target(self, grid):
+        """Obstacle mask for the physical route to a target -- real walls and
+        hazards, but WITHOUT the inflation safety margin, and with the
+        object's own surface carved out (same carve-out as
+        get_block_cells_for_target_navigation()).
+
+        This is the "what is truly impassable" view: a maze corridor that is
+        narrower than the robot's inflation margin is still PHYSICALLY open,
+        so it stays free here even though the normal (inflated) planner walls
+        it off.  Used only to trace where a route to the target would run --
+        the robot itself always drives the inflated, safe path.
+        """
+        blue_mask   = grid.reconciled_object_mask("blue")
+        yellow_mask = grid.reconciled_object_mask("yellow")
+        object_area = blue_mask | yellow_mask
+
+        # Carve the object's own lidar-wall surface out of the wall map, so
+        # the object cannot wall off its own destination.
+        obj_surface = grid.occ_mask() & self._inflate(
+            object_area, C.OBJECT_INFLATE_CELLS - 1)
+        walls = grid.occ_mask().copy()
+        walls[obj_surface] = False
+
+        return walls | grid.hazard_mask()
+
+    def plan_path_near_blocked_target(self, grid, start_xy, goal_xy):
+        """Plan a SAFE path that ends as close to `goal_xy` as the inflation
+        margin allows, for when a direct plan to the target failed.
+
+        WHY THIS IS NEEDED
+        ------------------
+        There is always a blue and a yellow object in the world, and a
+        physical route to each always exists.  But the object often sits
+        against a wall in a gap narrower than the robot's safety margin, so
+        the normal (inflated) planner reports "no path" -- the inflation
+        seals the approach even though the robot could physically squeeze in.
+
+        HOW IT WORKS (two reachable areas)
+        ----------------------------------
+          1. RAW route (area 1): A* on the UN-inflated obstacle map, which
+             still reaches the object because no safety margin seals the gap.
+          2. SAFE area (area 2): the normal inflated flood-fill reachable set
+             -- every cell the robot can reach WITHOUT clipping a wall.
+          3. Walk the raw route from the object end back toward the robot and
+             take the FIRST cell that is still inside the safe area.  That is
+             the point where the physical route crosses out of the blocked
+             (inflated) zone -- the closest the robot can safely park to the
+             object.  OBJECT_REACH_TOL then covers the last short gap.
+
+        Returns:
+            List of (row, col) cells of a SAFE path to that closest point, or
+            None if even the raw physical route does not exist (should not
+            happen for a real object, but handled defensively).
+        """
+        unknown = ~grid.observed
+
+        sc0, sr0 = grid.world_to_grid(*start_xy)
+        start_rc = (sr0, sc0)
+
+        # --- Step 1: raw physical route to the object (no inflation) --------
+        raw_blocked = self._raw_blocked_for_target(grid)
+        raw_start = start_rc
+        if raw_blocked[sr0, sc0]:
+            raw_start = self._nearest_free(raw_blocked, start_rc, max_r=5)
+            if raw_start is None:
+                return None
+        gc0, gr0 = grid.world_to_grid(*goal_xy)
+        raw_goal = self._nearest_free(raw_blocked, (gr0, gc0))
+        if raw_goal is None:
+            return None
+        raw_path = self.astar(raw_blocked, unknown, raw_start, raw_goal)
+        if raw_path is None:
+            return None   # not even a physical route -- give up
+
+        # --- Step 2: the safe (inflated) reachable set from the robot -------
+        safe_blocked   = self.get_block_cells_for_target_navigation(grid)
+        safe_reachable = self._flood_fill_free(
+            grid.observed, safe_blocked, sr0, sc0, grid.log.shape)
+
+        # --- Step 3: closest point on the raw route still safely reachable --
+        target_rc = None
+        for (r, c) in reversed(raw_path):   # object end first
+            if safe_reachable[r, c]:
+                target_rc = (r, c)
+                break
+        if target_rc is None:
+            return None   # no part of the route is safely reachable
+
+        # --- Step 4: a normal SAFE path to that closest reachable point -----
+        target_xy = grid.grid_to_world(target_rc[1], target_rc[0])
+        return self.plan_path_to(
+            grid, safe_blocked, unknown, start_xy, target_xy)
 
     # ---------------------------------------------------------------------- #
     @staticmethod

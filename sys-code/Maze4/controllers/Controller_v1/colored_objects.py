@@ -121,24 +121,44 @@ class TrackedObject:
 
 
     # ------------------------------------------------------------------ #
-    def update_reachable(self, reachable_mask, grid):
+    def update_reachable(self, reachable_mask, grid, tol=None):
         """Refresh the `reachable` flag using the planner's flood-fill result.
 
         `reachable_mask` is the SAME boolean array the frontier exploration
         pipeline already computes every planning cycle (PathPlanner.build_nav_grid's
-        `reachable` output, cached as Explorer._reachable_cache) -- checking a
-        single cell in it is essentially free, no extra A* call needed.
+        `reachable` output, cached as Explorer._reachable_cache) -- checking it
+        is essentially free, no extra A* call needed.
+
+        WHY A NEIGHBOURHOOD, NOT JUST THE OBJECT'S OWN CELL
+        --------------------------------------------------
+        An object usually sits against a wall, and the wall's inflation safety
+        margin seals off the object's own cell from the reachable set -- so a
+        single-cell lookup would call it "unreachable" even though the robot
+        can safely park right next to it and be within OBJECT_REACH_TOL.  We
+        therefore call it reachable if ANY safely-reachable cell lies within
+        `tol` of the object.  That is exactly the spot GoToPoint parks at via
+        planner.plan_path_near_blocked_target().
 
         Args:
             reachable_mask : bool ndarray, True where the robot can currently
                               reach that cell (flood fill from robot position).
             grid            : OccupancyGrid, for world_to_grid conversion.
+            tol            : reach radius (m); defaults to OBJECT_REACH_TOL.
         """
         if self.world_xy is None or reachable_mask is None:
             return
+        tol = C.OBJECT_REACH_TOL if tol is None else tol
         col, row = grid.world_to_grid(*self.world_xy)
-        if 0 <= row < reachable_mask.shape[0] and 0 <= col < reachable_mask.shape[1]:
-            self.reachable = bool(reachable_mask[row, col])
+        rad = max(1, int(round(tol / grid.res)))
+
+        r0 = max(0, row - rad)
+        r1 = min(reachable_mask.shape[0], row + rad + 1)
+        c0 = max(0, col - rad)
+        c1 = min(reachable_mask.shape[1], col + rad + 1)
+        if r0 >= r1 or c0 >= c1:
+            self.reachable = False   # object centre is off the grid entirely
+            return
+        self.reachable = bool(reachable_mask[r0:r1, c0:c1].any())
 
 
 
