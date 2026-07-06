@@ -84,8 +84,8 @@ LIDAR_ANGLE_OFFSET = 0.0  # rad.  Extra rotation if the lidar is mounted
 GRID_RESOLUTION = 0.04   # m per cell side.  Each cell is a 5 cm x 5 cm square.
                           # Smaller -> finer map, but more memory and slower.
 
-GRID_WIDTH_M  = 12.0     # Total map width in metres.  With 0.05 m/cell
-GRID_HEIGHT_M = 12.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
+GRID_WIDTH_M  = 11.0     # Total map width in metres.  With 0.05 m/cell
+GRID_HEIGHT_M = 11.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
 
 # Place the grid origin so that world (0,0) falls exactly in the middle.
 GRID_ORIGIN_X = -GRID_WIDTH_M  / 2.0   # world x of grid column 0
@@ -317,7 +317,7 @@ YELLOW_VAL_MIN = 0.20 # [0,1].
 OBJECT_INFLATE_CELLS = INFLATE_RADIUS_CELLS
 
 # Distance within which the robot counts as having "reached" a tracked object.
-OBJECT_REACH_TOL = 0.25   # m
+OBJECT_REACH_TOL = 0.24   # m
 
 # How far a new detection batch's centroid may drift from the object's
 # ALREADY-ESTABLISHED position before it is rejected as an outlier.
@@ -331,7 +331,7 @@ OBJECT_REACH_TOL = 0.25   # m
 # smearing the marked footprint across an ever-growing area.  Rejecting
 # detections that disagree too much with the current estimate keeps the
 # marked footprint bounded to roughly the object's real size.
-OBJECT_CONSISTENCY_TOL = 0.35   # m
+OBJECT_CONSISTENCY_TOL = 0.24   # m
 
 # Display-only: how many cells around a detected object to recolour if they
 # are ALSO wall cells (the lidar legitimately detects the object's own solid

@@ -225,11 +225,13 @@ class OccupancyGrid:
             np.ndarray bool -- True where occ_mask() is True AND the cell
             is within radius_cells of the requested tracked object(s).
         """
+        return self.any_object_mask() if color is None else self.object_mask(color)
         if radius_cells is None:
             radius_cells = C.OBJECT_MERGE_RADIUS_CELLS
         seed = self.any_object_mask() if color is None else self.object_mask(color)
         grown = grow_mask_4connected(seed, radius_cells)
         return grown & self.occ_mask()
+    
 
     def occ_mask_excluding_objects(self, radius_cells=None):
         """occ_mask(), with cells that are a tracked object's own surface

@@ -121,6 +121,8 @@ class Explorer:
     REVERSE   = "REVERSE"     # back up after getting stuck
     DONE      = "DONE"        # exploration complete
 
+
+
     def __init__(self, grid, frontier, planner, pilot):
         """
         Args:
@@ -452,6 +454,9 @@ class Explorer:
         return -C.CRUISE_SPEED, 0.0
 
 
+    def is_spin_seed_phase(self):
+        return self.phase == self.SPIN_SEED
+
 # ============================================================================
 # GoToPoint -- drive to ONE known (x, y) target (used for GO_BLUE / GO_YELLOW)
 # ============================================================================
@@ -680,8 +685,8 @@ class MazeExplorer:
         self.goto = GoToPoint(self.grid, self.planner, self.pilot)
 
         # Top-level mission state.
-        # self.mission  = Mission.EXPLORE_MAP
-        self.mission  = Mission.SEARCH_BLUE
+        self.mission  = Mission.EXPLORE_MAP
+        # self.mission  = Mission.SEARCH_BLUE
 
         # Per-step counters / state.
         self.step_i   = 0          # step counter (incremented every step)
@@ -880,7 +885,7 @@ class MazeExplorer:
                                     )
         self.robot.set_velocity(v, w)
         self._refresh_object_reachability()
-        if self.explorer.finished:
+        if self.explorer.finished or self.explorer.is_spin_seed_phase() is False:
             self._advance_from_explore()
 
     def _act_search(self, target_obj, go_mission, exhausted_mission):

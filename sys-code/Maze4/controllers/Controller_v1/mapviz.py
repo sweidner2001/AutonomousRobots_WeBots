@@ -216,8 +216,10 @@ class MapViz:
         blue_surface   = self.grid.object_surface_mask(color="blue")
         yellow_surface = self.grid.object_surface_mask(color="yellow")
 
-        img[blue_mask   | blue_surface]   = (0.15, 0.35, 0.95)
-        img[yellow_mask | yellow_surface] = (0.95, 0.85, 0.10)
+        img[blue_surface]   = (0.15, 0.35, 0.95)
+        # img[blue_mask   | blue_surface]   = (0.15, 0.35, 0.95)
+        # img[yellow_mask | yellow_surface] = (0.95, 0.85, 0.10)
+        img[yellow_surface] = (0.95, 0.85, 0.10)
 
         return img
 
