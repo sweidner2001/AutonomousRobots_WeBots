@@ -84,8 +84,8 @@ LIDAR_ANGLE_OFFSET = 0.0  # rad.  Extra rotation if the lidar is mounted
 GRID_RESOLUTION = 0.04   # m per cell side.  Each cell is a 5 cm x 5 cm square.
                           # Smaller -> finer map, but more memory and slower.
 
-GRID_WIDTH_M  = 15.0     # Total map width in metres.  With 0.05 m/cell
-GRID_HEIGHT_M = 15.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
+GRID_WIDTH_M  = 13.0     # Total map width in metres.  With 0.05 m/cell
+GRID_HEIGHT_M = 13.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
 
 # Place the grid origin so that world (0,0) falls exactly in the middle.
 GRID_ORIGIN_X = -GRID_WIDTH_M  / 2.0   # world x of grid column 0
@@ -255,6 +255,8 @@ SPIN_SEED_TURN = 6.5  # rad  Total rotation during the SPIN_SEED phase
 # falls in the image).
 CAMERA_HEIGHT_M     = 0.165  # m   Camera height above the ground.
 CAMERA_FORWARD_M    = -0.027 # m   Camera offset along the robot's forward axis.
+# CAMERA_FORWARD_M    = -0.03 # m   Camera offset along the robot's forward axis.
+# CAMERA_FORWARD_M    = -0.10 # m   Camera offset along the robot's forward axis.
 CAMERA_LATERAL_M    = 0.0    # m   Camera offset sideways (left positive).
 CAMERA_TILT_RAD     = 0.0    # rad Downward pitch of the camera. 0 = perfectly
                                # horizontal.  Positive = tilted down toward the floor.

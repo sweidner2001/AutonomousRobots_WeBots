@@ -102,7 +102,7 @@ class PathPlanner:
     def get_block_cells_for_target_navigation(self, grid):
         hazard_blocked = self._inflate(grid.hazard_mask(),    C.HAZARD_INFLATE_CELLS)
 
-        object_mask_for_delete_frontiers = self._inflate(grid.any_object_mask(), C.OBJECT_INFLATE_CELLS)
+        object_mask_for_delete_frontiers = self._inflate(grid.any_object_mask(), C.OBJECT_INFLATE_CELLS + 1)
         occ_mask_delete_lidar_scan_to_target = grid.occ_mask() & object_mask_for_delete_frontiers
         nav_to_target_occ_mask = grid.occ_mask().copy()
         nav_to_target_occ_mask[occ_mask_delete_lidar_scan_to_target] = False

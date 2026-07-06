@@ -680,7 +680,8 @@ class MazeExplorer:
         self.goto = GoToPoint(self.grid, self.planner, self.pilot)
 
         # Top-level mission state.
-        self.mission  = Mission.EXPLORE_MAP
+        # self.mission  = Mission.EXPLORE_MAP
+        self.mission  = Mission.SEARCH_BLUE
 
         # Per-step counters / state.
         self.step_i   = 0          # step counter (incremented every step)
