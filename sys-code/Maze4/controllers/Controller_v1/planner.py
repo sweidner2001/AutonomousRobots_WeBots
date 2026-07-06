@@ -91,10 +91,31 @@ class PathPlanner:
         ( 1,  1, 1.41421),  # down-right
     ]
 
+
+    def get_block_cells_for_frontier_exploration(self, grid):
+        hazard_blocked = self._inflate(grid.hazard_mask(),    C.HAZARD_INFLATE_CELLS)
+        wall_blocked   = self._inflate(grid.occ_mask(),       C.INFLATE_RADIUS_CELLS)
+        object_blocked = self._inflate(grid.any_object_mask(), C.OBJECT_INFLATE_CELLS)
+        blocked = wall_blocked | hazard_blocked | object_blocked
+        return blocked
+    
+    def get_block_cells_for_target_navigation(self, grid):
+        hazard_blocked = self._inflate(grid.hazard_mask(),    C.HAZARD_INFLATE_CELLS)
+
+        object_mask_for_delete_frontiers = self._inflate(grid.any_object_mask(), C.OBJECT_INFLATE_CELLS)
+        occ_mask_delete_lidar_scan_to_target = grid.occ_mask() & object_mask_for_delete_frontiers
+        nav_to_target_occ_mask = grid.occ_mask().copy()
+        nav_to_target_occ_mask[occ_mask_delete_lidar_scan_to_target] = False
+        wall_blocked  = self._inflate(nav_to_target_occ_mask, C.INFLATE_RADIUS_CELLS)
+        wall_blocked[occ_mask_delete_lidar_scan_to_target] = False
+
+        blocked = wall_blocked | hazard_blocked
+        return blocked
+
     # ---------------------------------------------------------------------- #
     # Navigation grid  (main entry point for planning)
     # ---------------------------------------------------------------------- #
-    def build_nav_grid(self, grid, robot_xy):
+    def build_nav_grid(self, grid, robot_xy, is_for_frontier=True):
         """Build a clean 3-value navigation grid: flood fill + obstacle inflation.
 
         This is the single source of truth for the planner and the frontier
@@ -138,10 +159,10 @@ class PathPlanner:
                                               (walls, green hazards, and objects).
         """
         # Step 1: inflate obstacles -- walls, hazards, and tracked objects alike.
-        wall_blocked   = self._inflate(grid.occ_mask(),       C.INFLATE_RADIUS_CELLS)
-        hazard_blocked = self._inflate(grid.hazard_mask(),    C.HAZARD_INFLATE_CELLS)
-        object_blocked = self._inflate(grid.any_object_mask(), C.OBJECT_INFLATE_CELLS)
-        blocked = wall_blocked | hazard_blocked | object_blocked
+        if is_for_frontier:
+            blocked = self.get_block_cells_for_frontier_exploration(grid)
+        else:
+            blocked = self.get_block_cells_for_target_navigation(grid)
 
         # Step 2: flood fill reachable free space from the robot's cell.
         col0, row0 = grid.world_to_grid(*robot_xy)
@@ -159,6 +180,15 @@ class PathPlanner:
         nav[blocked]   = 0.0
         
         return nav, reachable, blocked
+    
+
+    def get_target_reachablity_mask(self, grid, robot_xy):
+        blocked = self.get_block_cells_for_target_navigation(grid)
+        col0, row0 = grid.world_to_grid(*robot_xy)
+        reachable  = self._flood_fill_free(
+            grid.observed, blocked, row0, col0, grid.log.shape
+        )
+        return reachable
 
     @staticmethod
     def _flood_fill_free(observed, blocked, start_r, start_c, shape):
@@ -439,6 +469,49 @@ class PathPlanner:
                 break
 
         return best_path, best
+
+    # ---------------------------------------------------------------------- #
+    # Fixed-point planning (used to drive to a known target, e.g. a tracked
+    # blue/yellow object -- see explorer.py: GoToPoint)
+    # ---------------------------------------------------------------------- #
+    def plan_path_to(self, grid, blocked, unknown, start_xy, goal_xy):
+        """Plan an A* path from start_xy to goal_xy, both given as world
+        coordinates.  Unlike choose_target(), the goal is already known --
+        no frontier clustering or candidate scoring is needed.
+
+        Snaps both the start and the goal to the nearest non-blocked cell
+        if they land inside the inflation margin (same fallback used by
+        choose_target() when the robot is close to a wall).
+
+        Args:
+            grid     : OccupancyGrid (for coordinate conversion).
+            blocked  : inflated obstacle mask (from build_nav_grid).
+            unknown  : unobserved cell mask (from build_nav_grid).
+            start_xy : (x, y) world coordinates of the start (usually the robot).
+            goal_xy  : (x, y) world coordinates of the target.
+
+        Returns:
+            List of (row, col) grid cells from start to goal, or None if no
+            path could be found (goal unreachable, or robot/goal boxed in).
+        """
+        # Robot start point mapping:
+        sc0, sr0 = grid.world_to_grid(*start_xy)
+        start_rc = (sr0, sc0)
+        if (0 <= sr0 < blocked.shape[0] and 0 <= sc0 < blocked.shape[1]
+                and blocked[sr0, sc0]):
+            alt = self._nearest_free(blocked, start_rc, max_r=5)
+            if alt is None:
+                return None
+            start_rc = alt
+
+
+        # Goal point mapping:
+        gc0, gr0 = grid.world_to_grid(*goal_xy)
+        goal_rc = self._nearest_free(blocked, (gr0, gc0))
+        if goal_rc is None:
+            return None
+
+        return self.astar(blocked, unknown, start_rc, goal_rc)
 
     # ---------------------------------------------------------------------- #
     @staticmethod

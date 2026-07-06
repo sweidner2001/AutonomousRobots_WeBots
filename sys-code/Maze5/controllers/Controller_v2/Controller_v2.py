@@ -56,14 +56,31 @@ import sys
 # It imports all implementation modules from Maze4.
 from Maze4.controllers.Controller_v1.explorer import MazeExplorer
 
-def debug_show(navigable, unknown):
-    import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    for ax, data, title in zip(axes, [navigable, unknown], ["navigable", "unknown"]):
-        ax.imshow(data, cmap="gray", origin="lower", interpolation="nearest")
-        ax.set_title(title)
-    plt.tight_layout()
-    plt.pause(0.001)
+class DebugHelper:
+    """
+    Helper class for debugging and visualizing the maze exploration process.
+
+    This class provides methods to visualize the navigable and unknown areas
+    of the maze using matplotlib. It can be used to debug the exploration
+    algorithm by showing the current state of the maze.
+    """
+
+    @staticmethod
+    def debug_show(navigable, unknown):
+        """
+        Display the navigable and unknown areas of the maze.
+
+        Parameters:
+        - navigable: A 2D numpy array representing the navigable cells (True for navigable, False otherwise).
+        - unknown: A 2D numpy array representing the unknown cells (True for unknown, False otherwise).
+        """
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+        for ax, data, title in zip(axes, [navigable, unknown], ["navigable", "unknown"]):
+            ax.imshow(data, cmap="gray", origin="lower", interpolation="nearest")
+            ax.set_title(title)
+        plt.tight_layout()
+        plt.pause(0.001)
 
 
 def main():

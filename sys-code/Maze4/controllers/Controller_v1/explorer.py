@@ -2,10 +2,12 @@
 explorer.py  --  Exploration FSM and top-level mission orchestrator.
 =====================================================================
 
-TWO CLASSES IN THIS FILE
--------------------------
-  1. Explorer  -- the frontier-exploration sub-state-machine
-  2. MazeExplorer  -- the top-level orchestrator (owns everything, main loop)
+THREE CLASSES IN THIS FILE
+----------------------------
+  1. Explorer     -- the frontier-exploration sub-state-machine.
+  2. GoToPoint    -- drives to ONE known (x, y) target (used to fetch a
+                      tracked blue/yellow object once it's been located).
+  3. MazeExplorer -- the top-level orchestrator (owns everything, main loop).
 
 HOW THE WHOLE SYSTEM FITS TOGETHER
 ------------------------------------
@@ -18,20 +20,40 @@ The MazeExplorer is the "conductor" that owns all subsystems:
   │  OccupancyGrid -- the probabilistic map              │
   │  Odometry     -- estimates (x, y, heading)           │
   │  FrontierDetector -- finds unexplored boundaries     │
-  │  PathPlanner  -- A* path to best frontier            │
+  │  PathPlanner  -- A* path to best frontier / a point  │
   │  Pilot        -- converts path into motor commands   │
   │  MapViz       -- live matplotlib visualisation       │
   │  FloorHazardDetector -- finds green "no-go" tiles    │
-  │  Explorer     -- decides what to do next (FSM below) │
+  │  ColorObjectDetector -- finds blue/yellow objects    │
+  │  Explorer     -- frontier-exploration FSM            │
+  │  GoToPoint    -- "drive to one known point" FSM      │
   └──────────────────────────────────────────────────────┘
 
-Every simulation step the MazeExplorer does three things:
-  _perceive() -- read sensors, update pose, update map
-  _act()      -- decide motor command (drives via Explorer FSM)
+Every simulation step the MazeExplorer does three things, REGARDLESS of
+which mission phase is active -- perception never stops, even while the
+robot is driving toward a tracked object:
+  _perceive() -- read sensors, update pose, update map, look for hazards/objects
+  _act()      -- decide motor command (dispatches on Mission state, see below)
   _render()   -- refresh the map visualisation
 
-EXPLORER STATE MACHINE
------------------------
+TOP-LEVEL MISSION FLOW  (see mission.py for the Mission constants)
+------------------------------------------------------------------------
+  EXPLORE_MAP ──(fully mapped)──► SEARCH_BLUE ──(blue seen+reachable)──► GO_BLUE
+                                                                            │
+                       ┌────────────────────────────────────────(arrived)──┘
+                       ▼
+                 SEARCH_YELLOW ──(yellow seen+reachable)──► GO_YELLOW ──(arrived)──► DONE
+
+  SEARCH_BLUE / SEARCH_YELLOW keep running the SAME frontier-exploration
+  Explorer used in EXPLORE_MAP -- the robot keeps mapping unexplored area
+  while watching TrackedObject.seen/.reachable for the colour it's after.
+  As soon as both are True, the mission switches to GO_BLUE/GO_YELLOW and
+  GoToPoint takes over, driving straight to the object instead of the next
+  frontier.  If GoToPoint ever fails repeatedly (e.g. the object turns out
+  to be unreachable after all), the mission falls back to searching again.
+
+EXPLORER STATE MACHINE  (used during EXPLORE_MAP / SEARCH_BLUE / SEARCH_YELLOW)
+------------------------------------------------------------------------------------
 The Explorer has 5 phases:
 
   SPIN_SEED ─┐
@@ -59,6 +81,11 @@ to a blacklist.  Future PLAN calls skip blacklisted frontiers.
 This prevents the robot from looping forever on an unreachable target.
 The blacklist is automatically cleared after BLACKLIST_CLEAR successful
 plans so that updated-map data gets a fresh chance.
+
+GOTOPOINT STATE MACHINE  (used during GO_BLUE / GO_YELLOW)
+-------------------------------------------------------------
+Same PLAN / DRIVE / REVERSE shape as Explorer, but with no frontier logic
+at all -- the target is already known.  See the GoToPoint class docstring.
 """
 
 import math
@@ -143,6 +170,26 @@ class Explorer:
         self._plan_count    = 0    # number of successful plans so far
         # Track the current target centroid to decide when to blacklist.
         self._current_target_centroid = None
+
+    # ---------------------------------------------------------------------- #
+    def resume(self):
+        """Resume active frontier exploration.
+
+        Needed whenever MazeExplorer switches INTO SEARCH_BLUE/SEARCH_YELLOW:
+          - After EXPLORE_MAP finished (self.finished was True, self.phase
+            was DONE) -- update() would otherwise just return (0, 0) forever,
+            since no phase handler exists for DONE.
+          - After a failed GO_BLUE/GO_YELLOW attempt falls back to searching
+            again -- the FSM may have been sitting idle in that same DONE
+            state, or in a stale DRIVE/REVERSE phase pointed at wherever it
+            was heading before GoToPoint took over.
+
+        Does NOT reset the frontier blacklist or plan counters -- those
+        remain valid, only the phase/finished flags need clearing.
+        """
+        self.finished = False
+        self.phase    = self.PLAN
+        self.pilot.clear()
 
     # ---------------------------------------------------------------------- #
     # Main dispatch
@@ -230,7 +277,7 @@ class Explorer:
         # Flood fill from the robot through observed, non-blocked cells.
         # Also inflates obstacles by INFLATE_RADIUS_CELLS for safety.
         nav, reachable, blocked = self.planner.build_nav_grid(
-            self.grid, (pose[0], pose[1])
+            self.grid, (pose[0], pose[1]), is_for_frontier=True
         )
         self._nav_cache = nav
         self._reachable_cache = reachable
@@ -406,6 +453,179 @@ class Explorer:
 
 
 # ============================================================================
+# GoToPoint -- drive to ONE known (x, y) target (used for GO_BLUE / GO_YELLOW)
+# ============================================================================
+class GoToPoint:
+    """Drives the robot to a single fixed world (x, y) point.
+
+    This is deliberately much simpler than Explorer: there is no frontier
+    detection, clustering, or blacklisting -- the target is already known
+    (a tracked blue/yellow object's estimated position). It reuses the
+    exact same building blocks as Explorer (PathPlanner.build_nav_grid,
+    A*, Pilot, stuck/backup handling) so driving BEHAVES identically --
+    only "how the target is chosen" differs.
+
+    PHASES
+    -------
+      PLAN    -- run A* from the robot to the target.
+      DRIVE   -- follow the path; replan periodically or if it gets blocked
+                 by newly-discovered walls; detect stuck and back up.
+      REVERSE -- back up briefly after getting stuck, then replan.
+
+    OUTCOMES (checked by the caller every step)
+    -----------------------------------------------
+      self.arrived : True once the robot is within OBJECT_REACH_TOL of the target.
+      self.failed  : True after too many consecutive failed plan attempts
+                     (e.g. the target turned out to be unreachable after all).
+                     The caller should fall back to searching/exploring again.
+    """
+
+    PLAN    = "PLAN"
+    DRIVE   = "DRIVE"
+    REVERSE = "REVERSE"
+
+    def __init__(self, grid, planner, pilot):
+        self.grid    = grid
+        self.planner = planner
+        self.pilot   = pilot
+
+        self.target_xy = None
+        self.phase      = self.PLAN
+        self.arrived    = False
+        self.failed     = False
+
+        self._fail_count         = 0
+        self._last_plan_time     = -1e9
+        self._last_progress_xy   = (0.0, 0.0)
+        self._last_progress_time = 0.0
+        self._reverse_end_time   = 0.0
+        self._path_rc            = None
+        self.world_path          = None
+        self._blocked_cache      = None
+        self._nav_cache          = None
+        self._reachable_cache    = None
+
+    # ---------------------------------------------------------------------- #
+    def start(self, target_xy):
+        """Begin driving toward a new target, resetting all state.
+
+        Called once by MazeExplorer when the mission switches into
+        GO_BLUE/GO_YELLOW -- NOT every step.
+        """
+        self.target_xy = target_xy
+        self.phase      = self.PLAN
+        self.arrived    = False
+        self.failed     = False
+        self._fail_count = 0
+        self.pilot.clear()
+
+    # ---------------------------------------------------------------------- #
+    def update(self, pose, ranges, bearings, now):
+        """Return (v, w) wheel command for this control step."""
+        if self.phase == self.PLAN:
+            return self._plan(pose, now)
+        if self.phase == self.DRIVE:
+            return self._drive(pose, ranges, bearings, now)
+        if self.phase == self.REVERSE:
+            return self._reverse(pose, now)
+        return 0.0, 0.0
+
+    # ---------------------------------------------------------------------- #
+    # PLAN phase
+    # ---------------------------------------------------------------------- #
+    def _plan(self, pose, now):
+        """Build the nav grid and run A* straight to the target."""
+        nav, _reachable, blocked = self.planner.build_nav_grid(
+            self.grid, (pose[0], pose[1]), is_for_frontier=False
+        )
+        self._blocked_cache = blocked
+        self._nav_cache = nav
+        self._reachable_cache = _reachable
+        unknown = (nav == 0.5)
+
+        path_rc = self.planner.plan_path_to(
+            self.grid, blocked, unknown, (pose[0], pose[1]), self.target_xy
+        )
+
+        if path_rc is None:
+            self._fail_count += 1
+            print("[goto] no path to target (fail %d/6)." % self._fail_count)
+            if self._fail_count >= 6:
+                self.failed = True
+            return 0.0, C.MAX_TURN_SPEED * 0.5   # nudge around while retrying
+
+        self._fail_count = 0
+        self._path_rc    = path_rc
+        self.world_path  = self.planner.path_to_world(self.grid, path_rc)
+        self.pilot.set_path(self.world_path)
+
+        self._last_plan_time     = now
+        self._last_progress_xy   = (pose[0], pose[1])
+        self._last_progress_time = now
+
+        self.phase = self.DRIVE
+        return 0.0, 0.0
+
+    # ---------------------------------------------------------------------- #
+    # DRIVE phase
+    # ---------------------------------------------------------------------- #
+    def _drive(self, pose, ranges, bearings, now):
+        """Follow the path; replan/stuck-handling mirrors Explorer._drive()."""
+        v, w, done = self.pilot.compute(pose, ranges, bearings)
+
+        dist_to_target = math.hypot(
+            pose[0] - self.target_xy[0], pose[1] - self.target_xy[1]
+        )
+        if dist_to_target < C.OBJECT_REACH_TOL:
+            self.arrived = True
+            return 0.0, 0.0
+
+        if done:
+            self._trigger_replan()
+            return 0.0, 0.0
+
+        if (now - self._last_plan_time) >= C.PLAN_PERIOD:
+            self._trigger_replan()
+            return 0.0, 0.0
+
+        if self._path_rc and self._blocked_cache is not None:
+            if self.planner.path_blocked(self._path_rc, self._blocked_cache):
+                self._trigger_replan()
+                return 0.0, 0.0
+
+        moved = math.hypot(
+            pose[0] - self._last_progress_xy[0],
+            pose[1] - self._last_progress_xy[1]
+        )
+        if moved > C.STUCK_DIST:
+            self._last_progress_xy   = (pose[0], pose[1])
+            self._last_progress_time = now
+        elif (now - self._last_progress_time) > C.STUCK_TIME:
+            print("[goto] stuck at (%.2f, %.2f) -> backing up." % (pose[0], pose[1]))
+            self._trigger_replan()
+            self.phase = self.REVERSE
+            self._reverse_end_time = now + C.REVERSE_TIME
+            return -C.CRUISE_SPEED, 0.0
+
+        return v, w
+
+    def _trigger_replan(self):
+        self.pilot.clear()
+        self._path_rc   = None
+        self.world_path = None
+        self.phase      = self.PLAN
+
+    # ---------------------------------------------------------------------- #
+    # REVERSE phase
+    # ---------------------------------------------------------------------- #
+    def _reverse(self, pose, now):
+        if now >= self._reverse_end_time:
+            self.phase = self.PLAN
+            return 0.0, 0.0
+        return -C.CRUISE_SPEED, 0.0
+
+
+# ============================================================================
 # MazeExplorer -- top-level orchestrator
 # ============================================================================
 class MazeExplorer:
@@ -454,6 +674,10 @@ class MazeExplorer:
         self.explorer = Explorer(
             self.grid, self.frontier, self.planner, self.pilot
         )
+        # GoToPoint drives to ONE known point (used for GO_BLUE/GO_YELLOW).
+        # Shares the SAME planner/pilot as Explorer -- safe because only one
+        # of the two FSMs is ever "in control" at a time (see _act()).
+        self.goto = GoToPoint(self.grid, self.planner, self.pilot)
 
         # Top-level mission state.
         self.mission  = Mission.EXPLORE_MAP
@@ -598,38 +822,119 @@ class MazeExplorer:
     def _act(self):
         """Decide the motor command for this step and send it to the motors.
 
-        The top-level mission FSM selects which behaviour runs:
-          EXPLORE_MAP  -> Explorer FSM (spin, plan, drive, reverse)
-          DONE         -> stop motors, save map once
-          colour states -> placeholder stub (not implemented)
+        The top-level Mission state (see mission.py) selects which
+        behaviour runs:
+          EXPLORE_MAP    -> Explorer FSM: pure frontier exploration.
+          SEARCH_BLUE    -> Explorer FSM keeps exploring, ALSO watches for
+                             the blue object; switches to GO_BLUE once it
+                             is seen and confirmed reachable.
+          GO_BLUE        -> GoToPoint FSM drives straight to the blue object.
+          SEARCH_YELLOW  -> same as SEARCH_BLUE, but for yellow.
+          GO_YELLOW      -> same as GO_BLUE, but for yellow.
+          DONE           -> stop motors, save map once.
+
+        Note: perception (_perceive(), called just before _act() every
+        step -- see run()) is completely independent of `self.mission`.
+        The map keeps building and the camera keeps looking for hazards
+        and tracked objects no matter which phase is active below.
         """
         if self.mission == Mission.EXPLORE_MAP:
-            v, w = self.explorer.update(
-                self.pose, self.ranges, self.robot.bearings, self.now,
-                # scan_similarity=self.get_scan_similarity_to_previous(),
-                # previous_speed_command=self.robot.previous_v
-            )
-            self.robot.set_velocity(v, w)
+            self._act_explore_map()
 
-            # Refresh reachability using the flood-fill mask the frontier
-            # planner already computed this PLAN cycle -- a single cell
-            # lookup per object, effectively free (see TrackedObject.update_reachable).
-            reachable = self.explorer._reachable_cache
-            if reachable is not None:
-                self.blue_object.update_reachable(reachable, self.grid)
-                self.yellow_object.update_reachable(reachable, self.grid)
+        elif self.mission == Mission.SEARCH_BLUE:
+            self._act_search(self.blue_object, Mission.GO_BLUE, Mission.SEARCH_YELLOW)
 
-            if self.explorer.finished:
-                self._advance_from_explore()
+        elif self.mission == Mission.GO_BLUE:
+            self._act_go_to(self.blue_object, Mission.SEARCH_YELLOW, Mission.SEARCH_BLUE)
+
+        elif self.mission == Mission.SEARCH_YELLOW:
+            self._act_search(self.yellow_object, Mission.GO_YELLOW, Mission.DONE)
+
+        elif self.mission == Mission.GO_YELLOW:
+            self._act_go_to(self.yellow_object, Mission.DONE, Mission.SEARCH_YELLOW)
 
         elif self.mission == Mission.DONE:
             self.robot.stop()
             self._save_once()
 
-        else:
-            # SEARCH_BLUE / GO_BLUE / SEARCH_YELLOW / GO_YELLOW are not
-            # implemented yet -- fall through to DONE.
-            self._color_stub()
+    # ---------------------------------------------------------------------- #
+    # Mission phase handlers
+    # ---------------------------------------------------------------------- #
+    def _act_explore_map(self):
+        """EXPLORE_MAP: pure frontier exploration, no object-seeking yet."""
+        v, w = self.explorer.update(self.pose, self.ranges, self.robot.bearings, self.now,
+                                    # scan_similarity=self.get_scan_similarity_to_previous(),
+                                    # previous_speed_command=self.robot.previous_v
+                                    )
+        self.robot.set_velocity(v, w)
+        self._refresh_object_reachability()
+        if self.explorer.finished:
+            self._advance_from_explore()
+
+    def _act_search(self, target_obj, go_mission, exhausted_mission):
+        """SEARCH_BLUE / SEARCH_YELLOW: keep frontier-exploring (identical to
+        EXPLORE_MAP) while watching `target_obj`.  As soon as it has been
+        seen AND the flood-fill confirms it is currently reachable, switch
+        the mission to `go_mission` (GO_BLUE/GO_YELLOW) and hand the target
+        to GoToPoint.
+
+        If the whole map gets fully explored first without finding the
+        object, move on to `exhausted_mission` instead of stalling forever.
+        """
+        v, w = self.explorer.update(self.pose, self.ranges, self.robot.bearings, self.now)
+        self.robot.set_velocity(v, w)
+        self._refresh_object_reachability()
+
+        if target_obj.seen and target_obj.reachable:
+            print("[mission] %s object found and reachable at (%.2f, %.2f) -> %s"
+                  % (target_obj.color_name, target_obj.world_xy[0],
+                     target_obj.world_xy[1], go_mission))
+            self.goto.start(target_obj.world_xy)
+            self.mission = go_mission
+            return
+
+        if self.explorer.finished:
+            print("[mission] map fully explored, %s object never found/reachable -> %s"
+                  % (target_obj.color_name, exhausted_mission))
+            self.explorer.resume()   # in case exhausted_mission is another SEARCH_* state
+            self.mission = exhausted_mission
+
+    def _act_go_to(self, target_obj, arrived_mission, fallback_mission):
+        """GO_BLUE / GO_YELLOW: drive straight to a known object position.
+
+        On arrival, moves on to `arrived_mission`.  If GoToPoint gives up
+        (the target turned out to be unreachable after all -- e.g. a wall
+        was discovered mid-drive that blocks the only path), falls back to
+        `fallback_mission` so the robot resumes searching/exploring instead
+        of getting stuck.
+        """
+        v, w = self.goto.update(self.pose, self.ranges, self.robot.bearings, self.now)
+        self.robot.set_velocity(v, w)
+
+        if self.goto.arrived:
+            print("[mission] arrived at the %s object -> %s"
+                  % (target_obj.color_name, arrived_mission))
+            self.mission = arrived_mission
+
+        elif self.goto.failed:
+            print("[mission] could not reach the %s object after all -> back to %s"
+                  % (target_obj.color_name, fallback_mission))
+            target_obj.reachable = False   # force a fresh reachability check
+            self.explorer.resume()
+            self.mission = fallback_mission
+
+    def _refresh_object_reachability(self):
+        """Refresh both tracked objects' `reachable` flag from the flood-fill
+        mask the frontier planner already computed this PLAN cycle -- a
+        single cell lookup per object, effectively free (see
+        TrackedObject.update_reachable)."""
+        if self.blue_object.world_xy is None and self.yellow_object.world_xy is None:
+            return
+    
+        reachable = self.planner.get_target_reachablity_mask(self.grid, self.pose[:2])
+        if reachable is not None:
+            self.blue_object.update_reachable(reachable, self.grid)
+            self.yellow_object.update_reachable(reachable, self.grid)
 
     # ---------------------------------------------------------------------- #
     # Per-step visualisation
@@ -641,12 +946,14 @@ class MazeExplorer:
         Rendering every step would stall the controller.
         """
         if self.step_i % C.VIZ_EVERY == 0:
+            world_path, target_xy = self._current_path_and_target()
             self.viz.update(
                 self.pose,
                 scan_xy    = self._scan_world_points(),
-                world_path = self.explorer.world_path,
-                target_xy  = self.explorer.target_xy,
+                world_path = world_path,
+                target_xy  = target_xy,
             )
+
 
             self.viz.update_drive_map(
                 pose=self.pose,
@@ -656,6 +963,41 @@ class MazeExplorer:
                 fmask = self.explorer._fmask_cache,      # image 4
                 fclusters = self.explorer._fcluster_cache,   # image 5 (list of cluster dicts)
             )
+
+
+
+    def get_visualisation_data_drive_map(self):
+        """Return the data used to render the images in the "drive map" tab.
+
+        Returns:
+            dict with keys:
+                nav       : 2D NumPy array of navigation grid values (1.0=free, 0.5=unknown, 0.0=blocked)
+                fmask     : 2D boolean NumPy array of frontier cells
+                fclusters : list of dicts, each with keys 'centroid' and 'size'
+        """
+        if self.mission == Mission.GO_BLUE or self.mission == Mission.GO_YELLOW:
+            # In GO_BLUE/GO_YELLOW, the GoToPoint FSM is active, but we still want to show the last Explorer data.
+            return {
+                "nav": self.goto._nav_cache,
+                "fmask": None,      # GoToPoint does not compute frontiers
+                "fclusters": None,  # GoToPoint does not compute frontiers
+            }
+        else:
+            return {
+                "nav": self.explorer._nav_cache,
+                "fmask": self.explorer._fmask_cache,
+                "fclusters": self.explorer._fcluster_cache,
+            }
+
+    def _current_path_and_target(self):
+        """Pick which FSM's path/target to display, based on the active mission.
+
+        Explorer and GoToPoint are never active at the same time (see
+        _act()), so exactly one of them holds the currently-relevant path.
+        """
+        if self.mission in (Mission.GO_BLUE, Mission.GO_YELLOW):
+            return self.goto.world_path, self.goto.target_xy
+        return self.explorer.world_path, self.explorer.target_xy
 
     # ---------------------------------------------------------------------- #
     # Mission transitions
@@ -668,19 +1010,11 @@ class MazeExplorer:
         """
         print("[mission] EXPLORE_MAP complete.")
         if C.MISSION_ENABLE_COLOR:
+            self.explorer.resume()   # Explorer.finished is True -> needs resetting
             self.mission = Mission.SEARCH_BLUE
-            print("[mission] -> SEARCH_BLUE (not yet implemented).")
+            print("[mission] -> SEARCH_BLUE.")
         else:
             self.mission = Mission.DONE
-
-    def _color_stub(self):
-        """Placeholder for colour-detection mission phases.
-
-        Not implemented yet.  Just stops the robot and falls to DONE.
-        """
-        self.robot.stop()
-        print("[mission] state %s is a placeholder -> DONE." % self.mission)
-        self.mission = Mission.DONE
 
     # ---------------------------------------------------------------------- #
     # Helper methods

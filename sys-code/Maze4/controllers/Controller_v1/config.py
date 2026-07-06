@@ -322,9 +322,10 @@ OBJECT_REACH_TOL = 0.25   # m
 # ===========================================================================
 
 # When True, after the maze is fully explored the mission advances into
-# colour-search states (SEARCH_BLUE → ...).  These are placeholders for a
-# future phase; keep this False to just map and stop.
-MISSION_ENABLE_COLOR = False
+# the colour-search states (SEARCH_BLUE -> GO_BLUE -> SEARCH_YELLOW ->
+# GO_YELLOW -> DONE, see explorer.py's MazeExplorer._act()).  Set False to
+# just map the maze and stop without hunting for the blue/yellow objects.
+MISSION_ENABLE_COLOR = True
 
 # ===========================================================================
 # Output files  (written into the same folder as the controller)
