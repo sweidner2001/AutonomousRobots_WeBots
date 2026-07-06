@@ -319,6 +319,20 @@ OBJECT_INFLATE_CELLS = INFLATE_RADIUS_CELLS
 # Distance within which the robot counts as having "reached" a tracked object.
 OBJECT_REACH_TOL = 0.25   # m
 
+# How far a new detection batch's centroid may drift from the object's
+# ALREADY-ESTABLISHED position before it is rejected as an outlier.
+# WHY THIS EXISTS: odometry in this codebase is pure dead-reckoning (no
+# loop closure / absolute correction).  mark_object_world() is STICKY --
+# it never un-marks a cell.  If the SAME physical object is re-detected
+# many times over a long exploration run, each observation is projected
+# through a slightly-more-drifted pose estimate than the last; even though
+# the real object never moves, its COMPUTED position wanders over time,
+# and every wandering position gets permanently stamped into the grid --
+# smearing the marked footprint across an ever-growing area.  Rejecting
+# detections that disagree too much with the current estimate keeps the
+# marked footprint bounded to roughly the object's real size.
+OBJECT_CONSISTENCY_TOL = 0.35   # m
+
 # Display-only: how many cells around a detected object to recolour if they
 # are ALSO wall cells (the lidar legitimately detects the object's own solid
 # surface too -- see mapviz.py's _render_rgb() docstring).  Keep this SMALL:

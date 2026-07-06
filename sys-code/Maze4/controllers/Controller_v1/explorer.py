@@ -784,6 +784,11 @@ class MazeExplorer:
             )
             for color, obj in (("blue", self.blue_object), ("yellow", self.yellow_object)):
                 oxs, oys = points_by_color[color]
+                # Reject this frame's batch if it disagrees with the object's
+                # already-established position -- guards against odometry
+                # drift smearing the marked footprint over a long run (see
+                # colored_objects.py -- TrackedObject.filter_consistent()).
+                # oxs, oys = obj.filter_consistent(oxs, oys)
                 self.grid.mark_object_world(color, oxs, oys)
                 obj.update_detection(oxs, oys, self.now)
 

@@ -117,6 +117,51 @@ class TrackedObject:
         self.last_seen_time  = None  # simulation time (s) of the most recent detection
 
     # ------------------------------------------------------------------ #
+    def filter_consistent(self, xs, ys, tol=None):
+        """Reject a detection batch whose centroid is too far from the
+        CURRENTLY ESTABLISHED position -- almost certainly odometry drift
+        or a misdetection, not a genuine re-observation of the same object.
+
+        WHY THIS IS NEEDED
+        --------------------
+        Every detection frame's points get stamped directly into the
+        occupancy grid via OccupancyGrid.mark_object_world(), which is
+        STICKY (never un-marks a cell -- see that method's docstring).
+        Odometry here is pure dead-reckoning with no absolute correction,
+        so over a long exploration run the robot's pose estimate drifts.
+        Re-observing the SAME physical object later projects it through a
+        more-drifted pose than earlier observations did, even though the
+        real object hasn't moved -- and because marking never forgets,
+        every one of those drifting positions accumulates permanently,
+        smearing the marked footprint across an ever-growing area.
+
+        Calling this BEFORE grid.mark_object_world() / update_detection()
+        keeps the marked footprint bounded to roughly the object's real
+        size: once a position is established, only detections that agree
+        with it (within `tol`) are trusted going forward.
+
+        On the VERY FIRST detection (world_xy is still None) everything is
+        accepted -- there is nothing yet to compare against.
+
+        Args:
+            xs, ys : 1-D arrays of world coordinates detected THIS frame.
+            tol    : consistency tolerance (m); defaults to
+                      config.OBJECT_CONSISTENCY_TOL.
+
+        Returns:
+            (xs, ys) -- unchanged if consistent (or this is the first-ever
+            detection), otherwise two empty arrays (batch rejected).
+        """
+        if len(xs) == 0 or self.world_xy is None:
+            return xs, ys
+        tol = C.OBJECT_CONSISTENCY_TOL if tol is None else tol
+        cx, cy = float(np.mean(xs)), float(np.mean(ys))
+        dist = math.hypot(cx - self.world_xy[0], cy - self.world_xy[1])
+        if dist > tol:
+            return np.empty(0), np.empty(0)
+        return xs, ys
+
+    # ------------------------------------------------------------------ #
     def update_detection(self, xs, ys, now):
         """Fold a new batch of detected world points into the running estimate.
 
