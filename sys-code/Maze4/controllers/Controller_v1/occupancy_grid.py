@@ -540,6 +540,16 @@ class OccupancyGrid:
         map only stops updating a cell once it enters the 0.6 m depth dead
         zone, by which point the obstacle is already recorded.
 
+        OCCLUSION PADDING: FILLING IN THE BODY BEHIND THE VISIBLE FACE
+        --------------------------------------------------------------
+        From any single viewpoint the camera only sees the obstacle's NEAR
+        face; the body behind it is occluded and would stay unknown -- and
+        A* is allowed to plan through unknown cells, i.e. straight through
+        the object.  So each hit is extended CAMERA_OBSTACLE_DEPTH_PAD_M
+        further along its ray, marking the occluded cells occupied too.
+        The padding is normal log-odds evidence: a later viewpoint whose
+        rays pass through those cells to a farther hit erodes it again.
+
         Args:
             x, y, theta : robot pose, same convention as integrate_scan().
             ranges      : 1-D array of distances (m) from the camera to each
@@ -552,15 +562,19 @@ class OccupancyGrid:
         self._integrate_camera_rays(
             x, y, theta, ranges, bearings,
             log=self.camera_obstacle_log, observed=None,
+            pad_m=C.CAMERA_OBSTACLE_DEPTH_PAD_M,
         )
 
-    def _integrate_camera_rays(self, x, y, theta, ranges, bearings, log, observed):
+    def _integrate_camera_rays(self, x, y, theta, ranges, bearings, log, observed,
+                               pad_m=0.0):
         """Shared ray-casting core for camera-origin (range, bearing) scans.
 
         Places the sensor origin at the camera's mount offset (the same
         CAMERA_FORWARD_M / CAMERA_LATERAL_M constants floor_hazard.py and
         colored_objects.py use) and ray-traces every entry as a hit into
-        `log` via _ray().
+        `log` via _ray().  If pad_m > 0, the stretch from each hit to
+        pad_m metres further along the same ray is ALSO marked occupied
+        (occlusion padding -- see integrate_camera_obstacle's docstring).
         """
         if len(ranges) == 0:
             return
@@ -578,6 +592,18 @@ class OccupancyGrid:
             ey = sy + ranges[i] * sin_a[i]
             c1, r1 = self.world_to_grid(ex, ey)
             self._ray(c0, r0, c1, r1, hit=True, log=log, observed=observed)
+
+            if pad_m <= 0.0:
+                continue
+            # Occlusion padding: continue the ray behind the visible face and
+            # mark those (unobservable-from-here) cells occupied as well.
+            # [1:] skips the hit cell itself -- _ray() already updated it.
+            ex2 = sx + (ranges[i] + pad_m) * cos_a[i]
+            ey2 = sy + (ranges[i] + pad_m) * sin_a[i]
+            c2, r2 = self.world_to_grid(ex2, ey2)
+            for (c, r) in _bresenham(c1, r1, c2, r2)[1:]:
+                if self.in_bounds(c, r):
+                    log[r, c] = min(log[r, c] + C.L_OCC, C.L_CLAMP)
 
     def _ray(self, c0, r0, c1, r1, hit, log=None, observed=None):
         """Update grid cells along a single laser ray.

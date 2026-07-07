@@ -332,6 +332,17 @@ DEPTH_OBSTACLE_FLAT_TOL_M = 0.05   # m
 DEPTH_OBSTACLE_MIN_RUN_PX = 3
 DEPTH_OBSTACLE_MAX_RUN_PX = 25
 
+# The camera only ever sees an obstacle's NEAR face -- everything behind it
+# is occluded, so the object's true depth is unknowable from one viewpoint.
+# If we marked only the face, A* would happily plan a path through the
+# (unknown) body behind it.  So every camera hit is also padded this many
+# metres FURTHER along the ray, filling in a plausible body.  The padding is
+# ordinary log-odds evidence, NOT sticky: if a later viewpoint sees through
+# those cells (a ray passes them to a farther hit), the normal free-along-
+# the-ray updates erode the wrong padding again.  Over-padding costs at most
+# a small detour; under-padding risks driving through the object.
+CAMERA_OBSTACLE_DEPTH_PAD_M = 0.48   # m
+
 # ===========================================================================
 # Coloured target objects (blue / yellow) -- detection + tracking
 # ===========================================================================

@@ -83,7 +83,7 @@ class DepthObstacleDetector:
         read live from the Webots device in robot.py."""
         self.intr = CameraIntrinsics(
             camera_width, camera_height, camera_fov,
-            depth_min_range, depth_max_range,
+            depth_min_range, 4.5,
         )
 
         # Full-frame scan, same subsampling stride as the other detectors --
