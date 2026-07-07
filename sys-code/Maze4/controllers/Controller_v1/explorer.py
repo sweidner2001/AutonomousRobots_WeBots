@@ -817,11 +817,12 @@ class MazeExplorer:
             self.grid.fuse_camera_free_space(fxs, fys)
 
             # Pass the SAME control step's lidar scan so the detector can
-            # reject any coloured point that would sit behind a wall the
-            # lidar has already confirmed in the same direction (see
-            # colored_objects.py -- ColorObjectDetector._clamp_to_lidar()).
+            # fall back to it for pixels the depth camera cannot measure
+            # because the surface is closer than its minimum range -- e.g.
+            # the tracked object's own surface once the robot gets close
+            # (see colored_objects.py -- ColorObjectDetector.detect() Step 1b).
             points_by_color = self.color_detector.detect(
-                rgb_img, depth_img, self.pose)
+                rgb_img, depth_img, self.pose, self.ranges, self.robot.bearings)
             for color, obj in (("blue", self.blue_object), ("yellow", self.yellow_object)):
                 hit_xs, hit_ys, free_xs, free_ys = points_by_color[color]
                 # Fold this frame into the colour's log-odds map, EXACTLY like

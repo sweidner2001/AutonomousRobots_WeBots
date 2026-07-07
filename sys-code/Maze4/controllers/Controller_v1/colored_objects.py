@@ -53,6 +53,19 @@ Floor-height pixels can never be object hits, only free evidence: under
 some lighting the grey floor renders slightly blue-ish and would otherwise
 pass the HSV test on every frame, turning the entire explored floor into
 "blue object" and blocking the whole map for the planner.
+
+THE NEAR-FIELD FALLBACK (LIDAR FILLS THE DEPTH CAMERA'S BLIND ZONE)
+------------------------------------------------------------------------
+The depth camera cannot measure anything closer than its minimum range
+(~0.6 m).  When the robot gets close to the tracked object, the OBJECT'S
+OWN surface is exactly what falls inside that dead zone -- its pixels
+return inf and used to be silently dropped, leaving only the wall around
+or behind it to be classified.  See detect()'s Step 1b: for those inf
+pixels we look up the LIDAR's range at the same bearing (the lidar has no
+such dead zone) and, if it confirms something is genuinely that close,
+substitute it as the pixel's depth before running the normal registration
+and colour test.  This recovers the object's true near-field pixels
+instead of only ever seeing the wall behind it.
 """
 
 import math
@@ -231,13 +244,23 @@ class ColorObjectDetector:
         self._us, self._vs = sample_pixel_grid(self.intr, C.CAMERA_SAMPLE_STRIDE)
 
     # ------------------------------------------------------------------ #
-    def detect(self, rgb_img, depth_img, pose):
+    def detect(self, rgb_img, depth_img, pose, lidar_ranges=None, lidar_bearings=None):
         """Return world-frame points for each tracked colour this frame.
 
         Args:
             rgb_img   : (H, W, 3) uint8 array from Robot.read_camera_rgb().
             depth_img : (H, W) float32 array (metres) from Robot.read_camera_depth().
             pose      : (x, y, theta) robot pose from Odometry.
+            lidar_ranges   : optional 1-D array of the SAME control step's
+                              lidar ranges (robot.read_lidar()).  Used ONLY as
+                              a fallback for pixels the depth camera cannot
+                              measure because the surface is closer than its
+                              minimum range (see CAMERA_NEAR_FALLBACK_SLACK in
+                              config.py -- the "wall gets marked instead of
+                              the object" fix).  If omitted, these pixels are
+                              simply dropped, same as before.
+            lidar_bearings : matching 1-D array of bearings (rad, robot frame,
+                              positive = left) for lidar_ranges -- robot.bearings.
 
         Returns:
             dict {colour: (hit_xs, hit_ys, free_xs, free_ys)} for each of
@@ -259,10 +282,51 @@ class ColorObjectDetector:
             & (depth >= self.intr.min_range)
             & (depth <= self.intr.max_range)
         )
-        if not np.any(valid):
+
+        # ---- Step 1b: near-field fallback -- recover pixels the depth ------
+        # camera cannot see because the surface is CLOSER than its minimum
+        # range (see config.py CAMERA_NEAR_FALLBACK_SLACK for the full story).
+        # Without this, getting close to the object makes its own pixels
+        # vanish entirely, leaving only the wall around/behind it to be
+        # (mis-)classified.
+        us_v, vs_v, depth_v = us[valid], vs[valid], depth[valid]
+        if lidar_ranges is not None and lidar_bearings is not None and len(lidar_bearings) > 0:
+            too_close = (~valid) & (~np.isfinite(depth) | (depth < self.intr.min_range))
+            if np.any(too_close):
+                us_tc, vs_tc = us[too_close], vs[too_close]
+                # Bearing of each pixel is INDEPENDENT of depth (the unknown Z
+                # cancels): tan(bearing) = -(u - cx) / f, same convention as
+                # robot.bearings (positive = left).
+                bearing_cam = np.arctan2(-(us_tc - self.intr.cx), self.intr.f)
+
+                # Nearest lidar ray to each pixel's bearing (vectorised
+                # nearest-neighbour search via a single sort + searchsorted).
+                order    = np.argsort(lidar_bearings)
+                sorted_b = np.asarray(lidar_bearings)[order]
+                idx_s    = np.clip(np.searchsorted(sorted_b, bearing_cam), 1, len(sorted_b) - 1)
+                left, right = idx_s - 1, idx_s
+                use_left = np.abs(sorted_b[left] - bearing_cam) <= np.abs(sorted_b[right] - bearing_cam)
+                nearest  = order[np.where(use_left, left, right)]
+                r_fb     = np.asarray(lidar_ranges)[nearest]
+
+                # Only trust the substitution where the lidar independently
+                # confirms something genuinely sits inside the camera's blind
+                # zone in that direction -- not just "there is SOME wall
+                # somewhere in roughly that direction".
+                confirmed = (
+                    np.isfinite(r_fb)
+                    & (r_fb >= C.LIDAR_MIN_RANGE)
+                    & (r_fb <= self.intr.min_range * C.CAMERA_NEAR_FALLBACK_SLACK)
+                )
+                if np.any(confirmed):
+                    us_v    = np.concatenate([us_v,    us_tc[confirmed]])
+                    vs_v    = np.concatenate([vs_v,    vs_tc[confirmed]])
+                    depth_v = np.concatenate([depth_v, r_fb[confirmed]])
+
+        if len(us_v) == 0:
             return empty
 
-        us, vs, depth = us[valid], vs[valid], depth[valid]
+        us, vs, depth = us_v, vs_v, depth_v
 
         # ---- Step 2: back-project + Step 3: register & sample colour -------
         x_cam, y_cam, z_cam = back_project(us, vs, depth, self.intr)

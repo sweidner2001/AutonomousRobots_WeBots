@@ -394,6 +394,35 @@ YELLOW_HUE_MAX = 69   # degrees.  Upper bound.
 YELLOW_SAT_MIN = 0.35 # [0,1].
 YELLOW_VAL_MIN = 0.20 # [0,1].
 
+# --- Near-field fallback: LIDAR fills in where the depth camera goes blind --
+#
+# THE PROBLEM
+# ------------
+# The Astra depth camera has a MINIMUM range (~0.6 m, see robot.py --
+# camera_depth_min_range).  Closer than that, every pixel reads inf and is
+# dropped by the `valid` filter -- BEFORE the colour test even runs.  When
+# the robot gets within a few centimetres of the tracked object, the OBJECT
+# ITSELF is what falls inside this dead zone: its own pixels vanish, and the
+# only pixels that still have valid depth are the ones peeking AROUND it
+# (usually the wall behind).  Those get stamped as hits instead -- the
+# object's own true position contributes NOTHING, and stray colour bleed at
+# the object's silhouette can tag the wall behind it as the object instead.
+#
+# THE FIX
+# --------
+# For every pixel whose depth is inf/too-close, look up the LIDAR range at
+# that SAME bearing (the lidar has no dead zone down to LIDAR_MIN_RANGE).
+# If the lidar confirms something is genuinely close there, substitute its
+# range as this pixel's depth and run the EXACT SAME registration + colour
+# pipeline on it.  This recovers real hits (or free evidence) for the object
+# itself at close range instead of silently discarding those pixels.
+#
+# Only trust the substitution when the lidar itself reports a range within
+# this multiple of the camera's own minimum range -- i.e. the lidar agrees
+# "yes, something is within the camera's blind zone here", not just "there
+# happens to be a wall somewhere in roughly that direction".
+CAMERA_NEAR_FALLBACK_SLACK = 1.25   # multiplier on camera_depth_min_range
+
 # Same safety margin as walls/hazards when inflating for A*.
 OBJECT_INFLATE_CELLS = INFLATE_RADIUS_CELLS
 
