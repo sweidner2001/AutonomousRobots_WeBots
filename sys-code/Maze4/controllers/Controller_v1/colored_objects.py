@@ -68,8 +68,7 @@ from Maze4.controllers.Controller_v1.camera_geometry import (
 class TrackedObject:
     """Remembers everything currently known about one coloured target object.
 
-    One instance of this class exists per colour (see MazeExplorer.__init__:
-    self.blue_object = TrackedObject("blue"), self.yellow_object = TrackedObject("yellow")).
+    One instance of this class exists per colour.
     """
 
     def __init__(self, color_name):

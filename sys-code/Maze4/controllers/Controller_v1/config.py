@@ -84,8 +84,8 @@ LIDAR_ANGLE_OFFSET = 0.0  # rad.  Extra rotation if the lidar is mounted
 GRID_RESOLUTION = 0.04   # m per cell side.  Each cell is a 5 cm x 5 cm square.
                           # Smaller -> finer map, but more memory and slower.
 
-GRID_WIDTH_M  = 13.0     # Total map width in metres.  With 0.05 m/cell
-GRID_HEIGHT_M = 13.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
+GRID_WIDTH_M  = 11.0     # Total map width in metres.  With 0.05 m/cell
+GRID_HEIGHT_M = 11.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
 
 # Place the grid origin so that world (0,0) falls exactly in the middle.
 GRID_ORIGIN_X = -GRID_WIDTH_M  / 2.0   # world x of grid column 0

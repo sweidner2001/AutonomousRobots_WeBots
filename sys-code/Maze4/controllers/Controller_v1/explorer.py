@@ -828,11 +828,11 @@ class MazeExplorer:
             # fixed-height sweep can't see at all (see depth_obstacle.py).
             # Reuses the SAME depth_img already read above; feeds straight
             # into the SAME log-odds map the lidar uses, via integrate_scan_rgbd().
-            # obstacle_ranges, obstacle_bearings = self.depth_obstacle_detector.detect(depth_img)
-            # self.grid.integrate_scan_rgbd(
-            #     self.pose[0], self.pose[1], self.pose[2],
-            #     obstacle_ranges, obstacle_bearings
-            # )
+            obstacle_ranges, obstacle_bearings = self.depth_obstacle_detector.detect(depth_img)
+            self.grid.integrate_scan_rgbd(
+                self.pose[0], self.pose[1], self.pose[2],
+                obstacle_ranges, obstacle_bearings
+            )
 
         # Update "reached" every step -- cheap distance check, no reason to
         # wait for the next camera frame.
