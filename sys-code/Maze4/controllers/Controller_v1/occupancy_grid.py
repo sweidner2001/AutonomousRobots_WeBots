@@ -102,6 +102,12 @@ class OccupancyGrid:
             "yellow": np.zeros((self.nrows, self.ncols), dtype=np.float32),
         }
 
+        # Separate log-odds map for LOW obstacles the RGB-D camera sees but the
+        # lidar's fixed-height sweep passes over (see integrate_camera_obstacle
+        # for why this must NOT share self.log: the lidar would otherwise erase
+        # these cells as "free" on every scan).  0 = unknown (probability 0.5).
+        self.camera_obstacle_log = np.zeros((self.nrows, self.ncols), dtype=np.float32)
+
     # ---------------------------------------------------------------------- #
     # Coordinate conversion helpers
     # ---------------------------------------------------------------------- #
@@ -175,6 +181,17 @@ class OccupancyGrid:
         the lidar wall map.
         """
         return 1.0 - 1.0 / (1.0 + np.exp(self.object_log[color]))
+
+    def camera_obstacle_mask(self):
+        """Boolean mask: True where the camera-only obstacle map believes a
+        low, lidar-blind obstacle sits (p >= P_OCC_THRESH).
+
+        Kept entirely separate from occ_mask() (the lidar wall map) so the
+        lidar cannot erase these cells; the planner ORs the two together when
+        building its blocked-cell mask (see planner.get_block_cells_*).
+        """
+        prob = 1.0 - 1.0 / (1.0 + np.exp(self.camera_obstacle_log))
+        return prob >= C.P_OCC_THRESH
 
     def object_mask(self, color):
         """Boolean mask: True where the given colour ('blue' or 'yellow')
@@ -421,61 +438,57 @@ class OccupancyGrid:
             c1, r1 = self.world_to_grid(ex, ey)
 
             # Update all cells along the ray using Bresenham's line algorithm.
-            self._ray(c0, r0, c1, r1, hit)
+            self._ray(c0, r0, c1, r1, hit, observed=self.observed)
 
     # ---------------------------------------------------------------------- #
     # Scan integration  (RGB-D camera -- catches obstacles the lidar misses)
     # ---------------------------------------------------------------------- #
-    def integrate_scan_rgbd(self, x, y, theta, ranges, bearings):
-        """Fuse camera-detected obstacle points into the occupancy map.
+    def integrate_camera_obstacle(self, x, y, theta, ranges, bearings):
+        """Fuse camera-detected low obstacles into the SEPARATE camera-only
+        obstacle map (self.camera_obstacle_log) -- NOT the lidar map.
 
-        WHY THIS EXISTS
-        ------------------
-        The lidar only sweeps ONE fixed horizontal plane at a fixed height.
-        An obstacle that sits entirely above or below that exact height
-        (a low curb, a raised sill, a shelf edge, a thin rail) is completely
-        invisible to integrate_scan() -- the beam passes straight over or
-        under it, the map shows FREE space there, and the robot would
-        happily drive straight into something it never "saw".  The RGB-D
-        depth camera looks at a much taller vertical slice of the world in
-        every frame, so it can catch exactly these lidar-blind obstacles.
+        WHY A SEPARATE MAP INSTEAD OF self.log
+        --------------------------------------
+        The lidar only sweeps ONE fixed horizontal plane.  A low obstacle
+        (a few cm high -- see depth_obstacle.py) sits BELOW that plane, so
+        every lidar scan shoots straight over it and marks its cell FREE.
+        If we folded the camera's detection into the same self.log array, the
+        very next lidar scan would erase it again.  Keeping a dedicated
+        camera-only log-odds map means the lidar can never overwrite it; the
+        planner then treats camera_obstacle_mask() as impassable alongside
+        walls and hazards (see planner.get_block_cells_*).
 
-        See depth_obstacle.py (DepthObstacleDetector) for HOW candidate
-        obstacle points are found: a simple, colour-agnostic heuristic
-        that looks for small patches of near-CONSTANT depth (a flat,
-        camera-facing surface) that are clearly not part of the floor.
-        That detector reduces the raw depth image down to exactly the
-        same (range, bearing) representation the lidar already uses, so
-        this method can mark cells with the SAME Bresenham ray-tracing +
-        log-odds update as integrate_scan() -- reusing _ray() directly.
-
-        HOW THIS DIFFERS FROM integrate_scan()
-        -------------------------------------------
-        Every entry passed in here is ALREADY a confirmed candidate
-        obstacle -- DepthObstacleDetector has already thrown out invalid,
-        out-of-range, and floor-level points, so (unlike integrate_scan(),
-        which must inspect every single raw lidar ray and skip the "no
-        hit" ones) every ray here is unconditionally treated as a hit.
-        Cells get folded into the EXACT SAME log-odds array the lidar
-        uses (self.log), so occ_mask(), the planner's obstacle inflation,
-        and the live map view all pick these obstacles up automatically --
-        no other module needs to change to benefit from this.
+        It is still a full inverse-sensor-model update (FREE along the ray,
+        OCCUPIED at the hit), so a camera false positive is self-corrected
+        the next time the camera sees clear depth through that cell -- the
+        map only stops updating a cell once it enters the 0.6 m depth dead
+        zone, by which point the obstacle is already recorded.
 
         Args:
             x, y, theta : robot pose, same convention as integrate_scan().
-            ranges      : 1-D array of ground-plane distances (m) from the
-                           camera to each candidate obstacle point.
+            ranges      : 1-D array of distances (m) from the camera to each
+                           detected obstacle point.
             bearings    : 1-D array of matching bearings (rad, robot frame,
-                           same sign convention as robot.bearings: positive
-                           = to the left).
+                           positive = left, same as robot.bearings).
+        """
+        # observed=None: this map must not touch the lidar's frontier "observed"
+        # bookkeeping -- it lives entirely in camera_obstacle_log.
+        self._integrate_camera_rays(
+            x, y, theta, ranges, bearings,
+            log=self.camera_obstacle_log, observed=None,
+        )
+
+    def _integrate_camera_rays(self, x, y, theta, ranges, bearings, log, observed):
+        """Shared ray-casting core for camera-origin (range, bearing) scans.
+
+        Places the sensor origin at the camera's mount offset (the same
+        CAMERA_FORWARD_M / CAMERA_LATERAL_M constants floor_hazard.py and
+        colored_objects.py use) and ray-traces every entry as a hit into
+        `log` via _ray().
         """
         if len(ranges) == 0:
             return
 
-        # The camera sits at its own mount offset from the robot centre --
-        # see config.py CAMERA_FORWARD_M / CAMERA_LATERAL_M (the same
-        # constants floor_hazard.py and colored_objects.py use to place
-        # detected points, for the same reason).
         sx = x + C.CAMERA_FORWARD_M * np.cos(theta) - C.CAMERA_LATERAL_M * np.sin(theta)
         sy = y + C.CAMERA_FORWARD_M * np.sin(theta) + C.CAMERA_LATERAL_M * np.cos(theta)
         c0, r0 = self.world_to_grid(sx, sy)
@@ -488,9 +501,9 @@ class OccupancyGrid:
             ex = sx + ranges[i] * cos_a[i]
             ey = sy + ranges[i] * sin_a[i]
             c1, r1 = self.world_to_grid(ex, ey)
-            self._ray(c0, r0, c1, r1, hit=True)
+            self._ray(c0, r0, c1, r1, hit=True, log=log, observed=observed)
 
-    def _ray(self, c0, r0, c1, r1, hit):
+    def _ray(self, c0, r0, c1, r1, hit, log=None, observed=None):
         """Update grid cells along a single laser ray.
 
         All cells from (c0,r0) to the cell BEFORE the end are marked FREE.
@@ -498,10 +511,18 @@ class OccupancyGrid:
         or FREE if the beam did not hit anything.
 
         Args:
-            c0, r0 : Start cell (sensor position).
-            c1, r1 : End cell (hit or max range point).
-            hit    : True if the ray struck an obstacle at (c1, r1).
+            c0, r0   : Start cell (sensor position).
+            c1, r1   : End cell (hit or max range point).
+            hit      : True if the ray struck an obstacle at (c1, r1).
+            log      : log-odds array to update (default: the lidar map self.log).
+                        Pass self.camera_obstacle_log to build the SEPARATE
+                        camera-only obstacle map (see integrate_camera_obstacle).
+            observed : "ever seen" array to update, or None to leave it alone.
+                        The camera-obstacle map passes None so it does NOT touch
+                        the lidar's frontier bookkeeping.
         """
+        if log is None:
+            log = self.log
         cells = _bresenham(c0, r0, c1, r1)
         if not cells:
             return
@@ -510,15 +531,17 @@ class OccupancyGrid:
         for (c, r) in cells[:-1]:
             if self.in_bounds(c, r):
                 # Subtract L_FREE (making cell more likely free), then clamp.
-                self.log[r, c] = max(self.log[r, c] + C.L_FREE, -C.L_CLAMP)
-                self.observed[r, c] = True
+                log[r, c] = max(log[r, c] + C.L_FREE, -C.L_CLAMP)
+                if observed is not None:
+                    observed[r, c] = True
 
         # Update the end cell — always a confirmed hit (inf and max-range rays
         # are skipped in integrate_scan before _ray is called).
         c, r = cells[-1]
         if self.in_bounds(c, r):
-            self.log[r, c] = min(self.log[r, c] + C.L_OCC, C.L_CLAMP)
-            self.observed[r, c] = True
+            log[r, c] = min(log[r, c] + C.L_OCC, C.L_CLAMP)
+            if observed is not None:
+                observed[r, c] = True
 
     # ---------------------------------------------------------------------- #
     def save(self, npy_path):

@@ -824,12 +824,14 @@ class MazeExplorer:
                 # of truth (see colored_objects.py -- update_from_grid()).
                 obj.update_from_grid(self.grid, self.now)
 
-            # Depth-only obstacle detection -- catches obstacles the lidar's
-            # fixed-height sweep can't see at all (see depth_obstacle.py).
-            # Reuses the SAME depth_img already read above; feeds straight
-            # into the SAME log-odds map the lidar uses, via integrate_scan_rgbd().
+            # Depth-only obstacle detection -- catches low, lidar-blind
+            # obstacles (a few cm high) the lidar's fixed-height sweep passes
+            # straight over (see depth_obstacle.py).  Reuses the SAME depth_img
+            # already read above; feeds into a SEPARATE camera-only obstacle map
+            # (NOT the lidar log-odds map) so the lidar can't erase these cells
+            # -- see occupancy_grid.py integrate_camera_obstacle().
             obstacle_ranges, obstacle_bearings = self.depth_obstacle_detector.detect(depth_img)
-            self.grid.integrate_scan_rgbd(
+            self.grid.integrate_camera_obstacle(
                 self.pose[0], self.pose[1], self.pose[2],
                 obstacle_ranges, obstacle_bearings
             )

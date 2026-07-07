@@ -96,7 +96,10 @@ class PathPlanner:
         hazard_blocked = self._inflate(grid.hazard_mask(),    C.HAZARD_INFLATE_CELLS)
         wall_blocked   = self._inflate(grid.occ_mask(),       C.INFLATE_RADIUS_CELLS)
         object_blocked = self._inflate(grid.any_object_mask(), C.OBJECT_INFLATE_CELLS)
-        blocked = wall_blocked | hazard_blocked | object_blocked
+        # Low, lidar-blind obstacles live in their own camera-only map (see
+        # occupancy_grid.integrate_camera_obstacle) -- fold them in like walls.
+        camera_obs_blocked = self._inflate(grid.camera_obstacle_mask(), C.INFLATE_RADIUS_CELLS)
+        blocked = wall_blocked | hazard_blocked | object_blocked | camera_obs_blocked
         return blocked
     
     
@@ -141,7 +144,11 @@ class PathPlanner:
         wall_blocked  = self._inflate(nav_to_target_occ_mask, C.INFLATE_RADIUS_CELLS)
         wall_blocked[occ_mask_delete_lidar_scan_to_target] = False
 
-        blocked = wall_blocked | hazard_blocked
+        # Low, lidar-blind obstacles (camera-only map) block the target route
+        # too -- same as walls (see occupancy_grid.integrate_camera_obstacle).
+        camera_obs_blocked = self._inflate(grid.camera_obstacle_mask(), C.INFLATE_RADIUS_CELLS)
+
+        blocked = wall_blocked | hazard_blocked | camera_obs_blocked
         return blocked
 
     # ---------------------------------------------------------------------- #

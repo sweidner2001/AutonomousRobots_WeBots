@@ -195,6 +195,10 @@ class MapViz:
         # Override camera-detected hazard cells with bright green.
         img[self.grid.hazard_mask()] = (0.1, 0.9, 0.1)
 
+        # Override low, lidar-blind obstacles (camera-only map) with orange,
+        # so they are distinguishable from lidar walls (black) while debugging.
+        img[self.grid.camera_obstacle_mask()] = (1.0, 0.55, 0.0)
+
         # Override camera-detected tracked-object cells -- AND nearby wall
         # cells the lidar agrees are really the same object's surface --
         # with their colour (see occupancy_grid.py: reconciled_object_mask()).

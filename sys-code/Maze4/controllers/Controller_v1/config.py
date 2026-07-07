@@ -301,8 +301,9 @@ HAZARD_INFLATE_CELLS = INFLATE_RADIUS_CELLS  # Same safety margin as walls.
 # invisible to it.  depth_obstacle.py looks for small patches of near-
 # CONSTANT depth in the camera image (a flat, camera-facing surface -- a
 # real obstacle) that are clearly not just the ordinary floor, and feeds
-# them into OccupancyGrid.integrate_scan_rgbd() using the SAME (range,
-# bearing) + log-odds mechanism the lidar uses.
+# them into OccupancyGrid.integrate_camera_obstacle() -- a SEPARATE camera-
+# only log-odds map (so the lidar can't erase these low obstacles), fused
+# into the planner's blocked cells like walls and hazards.
 
 # Two neighbouring sampled pixels count as "the same flat surface" if their
 # depth differs by less than this.  Too small -> real flat surfaces get
@@ -310,6 +311,26 @@ HAZARD_INFLATE_CELLS = INFLATE_RADIUS_CELLS  # Same safety margin as walls.
 # gently-curving floor near the horizon starts getting misclassified as
 # an obstacle (see depth_obstacle.py's module docstring).
 CAMERA_FLAT_TOL_M = 0.03   # m
+
+# --- Column-run obstacle detection (depth_obstacle.py) ----------------------
+# A low, lidar-blind obstacle (a few cm high) shows up in the depth image as
+# a VERTICAL RUN of near-constant depth inside a single column: every pixel
+# on the obstacle's upright face is at the same forward distance, differing
+# only in height.  The floor does the opposite -- its depth changes smoothly
+# from one row to the next -- so a long constant-depth run in a column is a
+# reliable "there is an upright surface here" signal.  See depth_obstacle.py.
+#
+# A pixel joins a run while its depth stays within this tolerance of the
+# depth at the run's TOP pixel (so the whole run spans at most ~this much).
+DEPTH_OBSTACLE_FLAT_TOL_M = 0.05   # m
+
+# A run only counts as an obstacle if it is between MIN and MAX pixels TALL
+# (measured in full-resolution image rows).  These bounds are what makes the
+# detector target LOW obstacles specifically: at 0.5-1.5 m a few-cm object
+# subtends roughly 20-80 px, whereas taller things (walls) subtend more and
+# are already handled by the lidar; noise subtends less.  Tune per world.
+DEPTH_OBSTACLE_MIN_RUN_PX = 3
+DEPTH_OBSTACLE_MAX_RUN_PX = 25
 
 # ===========================================================================
 # Coloured target objects (blue / yellow) -- detection + tracking
