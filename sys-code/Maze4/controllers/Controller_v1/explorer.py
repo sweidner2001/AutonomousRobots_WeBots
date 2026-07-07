@@ -383,7 +383,8 @@ class Explorer:
         if done:
             # Path traversed or target reached -> immediately replan.
             self._trigger_replan()
-            return 0.0, 0.0
+            # return 0.0, 0.0
+            return 0.0, 0.5
 
         if (now - self._last_plan_time) >= C.PLAN_PERIOD:
             # Periodic replan: the map may have changed, new walls may have
@@ -800,8 +801,16 @@ class MazeExplorer:
             rgb_img   = self.robot.read_camera_rgb()
             depth_img = self.robot.read_camera_depth()
 
-            xs, ys = self.hazard_detector.detect(rgb_img, depth_img, self.pose)
-            self.grid.mark_hazard_world(xs, ys)
+            # The floor detector returns TWO kinds of confirmed-floor points:
+            # green hazards (blocked) and everything else (free floor).  The
+            # free points fill map holes the lidar can never close -- a lidar
+            # ray that hits no wall is skipped entirely, leaving open areas
+            # UNKNOWN forever.  fuse_camera_free_space() only touches cells
+            # the lidar has never observed, so it can't fight the wall map.
+            hxs, hys, fxs, fys = self.hazard_detector.detect(
+                rgb_img, depth_img, self.pose)
+            self.grid.mark_hazard_world(hxs, hys)
+            self.grid.fuse_camera_free_space(fxs, fys)
 
             # Pass the SAME control step's lidar scan so the detector can
             # reject any coloured point that would sit behind a wall the

@@ -503,13 +503,13 @@ class PathPlanner:
             length_m = (len(path) - 1) * grid.res
             cost = length_m - C.INFO_GAIN_WEIGHT * math.sqrt(cl["size"])
 
-            if cost < best_cost:
+            if cost < best_cost and length_m > C.LIDAR_MIN_RANGE*2:
                 best_cost = cost
                 best      = cl
                 best_path = path
 
             # If the best path found so far is very short, take it immediately.
-            if best is not None and length_m < 1.0:
+            if best is not None and length_m < 1.0 and length_m > C.LIDAR_MIN_RANGE*2:
                 break
 
         return best_path, best

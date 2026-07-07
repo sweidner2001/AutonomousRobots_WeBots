@@ -60,6 +60,8 @@ COORDINATE CONVENTIONS
 The grid origin (col=0, row=0) is at world (GRID_ORIGIN_X, GRID_ORIGIN_Y).
 """
 
+import math
+
 import numpy as np
 
 import Maze4.controllers.Controller_v1.config as C
@@ -317,6 +319,80 @@ class OccupancyGrid:
                      May be empty -- this is a normal "nothing detected" frame.
         """
         self._mark_world(self.hazard, xs, ys)
+
+    def fuse_camera_free_space(self, xs, ys):
+        """Fill UNKNOWN map holes with free floor the camera directly saw.
+
+        THE PROBLEM THIS SOLVES
+        --------------------------
+        integrate_scan() only marks cells free along rays that actually HIT
+        a wall -- an inf ray (no wall within range) is skipped completely,
+        because we cannot tell "open space" from "beam lost".  In open areas
+        with no wall behind them, the lidar therefore NEVER confirms the
+        floor, and those cells stay UNKNOWN forever: phantom frontiers the
+        robot keeps chasing, and holes in the flood-fill reachable set.
+
+        The RGB-D camera does not have this ambiguity: a pixel that passes
+        the ground-plane test (see floor_hazard.py) is a direct measurement
+        of real, open floor at a known (x, y).  We fuse those points here.
+
+        THE FUSION RULE: ONLY WHERE THE MAP IS STILL UNKNOWN
+        -----------------------------------------------------
+        A cell the lidar has already observed is left completely alone --
+        the lidar is the more reliable geometry sensor, and the camera must
+        never overrule it (e.g. soften a wall reading).  Only cells with
+        observed == False receive the camera's free evidence:
+
+          1. add L_FREE to the cell's log-odds (once per cell per frame --
+             many pixels landing in the same cell still count as ONE
+             observation, so a single frame cannot over-commit);
+          2. once the accumulated log-odds is confidently free
+             (p <= P_FREE_THRESH, i.e. at least two camera confirmations),
+             flip observed = True.  From then on the cell counts as known
+             free space for the frontier detector and flood fill, and this
+             method stops touching it (it is no longer unknown).
+
+        Requiring two confirmations before the flip keeps one noisy frame
+        from erasing a genuine frontier.
+
+        Args:
+            xs, ys : 1-D NumPy arrays of world coordinates (m) of confirmed
+                     free-floor points (may be empty).
+        """
+        if len(xs) == 0:
+            return
+
+        cols = ((np.asarray(xs) - self.ox) / self.res).astype(np.int32)
+        rows = ((np.asarray(ys) - self.oy) / self.res).astype(np.int32)
+
+        keep = (
+            (cols >= 0) & (cols < self.ncols)
+            & (rows >= 0) & (rows < self.nrows)
+        )
+        rows, cols = rows[keep], cols[keep]
+        if rows.size == 0:
+            return
+
+        # Only cells the lidar has NEVER observed (the fusion rule above).
+        unknown = ~self.observed[rows, cols]
+        rows, cols = rows[unknown], cols[unknown]
+        if rows.size == 0:
+            return
+
+        # De-duplicate: one log-odds step per cell per frame, no matter how
+        # many camera pixels landed in it.
+        flat = np.unique(rows.astype(np.int64) * self.ncols + cols)
+        rows = (flat // self.ncols).astype(np.int32)
+        cols = (flat %  self.ncols).astype(np.int32)
+
+        self.log[rows, cols] = np.maximum(
+            self.log[rows, cols] + C.L_FREE, -C.L_CLAMP)
+
+        # Flip to "observed" once confidently free.  In log-odds, the
+        # p <= P_FREE_THRESH boundary is log(p / (1-p)).
+        free_logodds = math.log(C.P_FREE_THRESH / (1.0 - C.P_FREE_THRESH))
+        confirmed = self.log[rows, cols] <= free_logodds
+        self.observed[rows[confirmed], cols[confirmed]] = True
 
     def update_object_observation(self, color, hit_xs, hit_ys, free_xs, free_ys):
         """Fold ONE camera frame's colour observation into `color`'s log-odds

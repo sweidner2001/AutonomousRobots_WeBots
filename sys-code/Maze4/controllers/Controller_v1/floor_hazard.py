@@ -141,7 +141,16 @@ class FloorHazardDetector:
     # Main entry point
     # ------------------------------------------------------------------ #
     def detect(self, rgb_img, depth_img, pose):
-        """Return world-frame (xs, ys) of every detected green-floor point.
+        """Return world-frame points for green hazards AND confirmed free floor.
+
+        Every sampled pixel that passes the ground-plane test is real floor
+        the camera directly measured.  The GREEN ones are hazards; all the
+        OTHERS are confirmed FREE floor -- valuable where the lidar has no
+        information at all (a lidar ray that hits no wall within range is
+        skipped entirely by integrate_scan(), leaving those cells UNKNOWN
+        forever even though the space is open).  The caller fuses the free
+        points into the map via OccupancyGrid.fuse_camera_free_space(),
+        which only touches cells the lidar has never observed.
 
         Args:
             rgb_img   : (H, W, 3) uint8 array from Robot.read_camera_rgb().
@@ -149,9 +158,10 @@ class FloorHazardDetector:
             pose      : (x, y, theta) robot pose from Odometry.
 
         Returns:
-            (xs, ys) -- two 1-D NumPy float arrays of world coordinates
-            (possibly empty if nothing matched this frame).
+            (hazard_xs, hazard_ys, free_xs, free_ys) -- four 1-D NumPy float
+            arrays of world coordinates (each pair possibly empty).
         """
+        empty4 = (np.empty(0), np.empty(0), np.empty(0), np.empty(0))
         us, vs = self._us, self._vs
 
         # ---- Step 1: read depth at the sampled pixels ----------------------
@@ -162,7 +172,7 @@ class FloorHazardDetector:
             & (depth <= self.intr.max_range)
         )
         if not np.any(valid):
-            return np.empty(0), np.empty(0)
+            return empty4
 
         us, vs, depth = us[valid], vs[valid], depth[valid]
 
@@ -181,8 +191,6 @@ class FloorHazardDetector:
             & (sat >= C.GREEN_SAT_MIN)
             & (val >= C.GREEN_VAL_MIN)
         )
-        if not np.any(green):
-            return np.empty(0), np.empty(0)
 
         # ---- Step 5: ground-plane test ---------------------------------------
         # Rotate the camera-local point by the mount tilt to find how far
@@ -192,15 +200,22 @@ class FloorHazardDetector:
         height_above_ground = C.CAMERA_HEIGHT_M - drop_lvl
 
         on_floor = np.abs(height_above_ground) <= C.GROUND_PLANE_TOL_M
+        if not np.any(on_floor):
+            return empty4
 
-        keep = green & on_floor
-        if not np.any(keep):
-            return np.empty(0), np.empty(0)
+        # ---- Step 6: split floor points into hazard (green) and free (rest) --
+        hazard_keep = on_floor & green
+        free_keep   = on_floor & ~green
 
-        forward_lvl = forward_lvl[keep]
-        right_lvl   = x_cam[keep]   # left/right offset unaffected by pitch tilt
+        def _to_world(keep):
+            if not np.any(keep):
+                return np.empty(0), np.empty(0)
+            # left/right offset (x_cam) is unaffected by pitch tilt.
+            return camera_local_to_world(
+                forward_lvl[keep], x_cam[keep], pose,
+                C.CAMERA_FORWARD_M, C.CAMERA_LATERAL_M,
+            )
 
-        # ---- Step 6: camera-local (forward, right) -> world (x, y) ----------
-        return camera_local_to_world(
-            forward_lvl, right_lvl, pose, C.CAMERA_FORWARD_M, C.CAMERA_LATERAL_M
-        )
+        hazard_xs, hazard_ys = _to_world(hazard_keep)
+        free_xs,   free_ys   = _to_world(free_keep)
+        return hazard_xs, hazard_ys, free_xs, free_ys
