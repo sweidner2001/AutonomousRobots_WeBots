@@ -722,6 +722,10 @@ class MazeExplorer:
         self._saved   = False      # prevent saving the map more than once
         self.out_dir  = os.path.dirname(os.path.abspath(__file__))
 
+        # Reactive safety reflex (IR distance sensors): while sim-time is below
+        # this, the robot is in a forced backup manoeuvre -- see _safety_reflex.
+        self._safety_backup_until = -1e9
+
     # ---------------------------------------------------------------------- #
     # Main simulation loop
     # ---------------------------------------------------------------------- #
@@ -903,6 +907,12 @@ class MazeExplorer:
         The map keeps building and the camera keeps looking for hazards
         and tracked objects no matter which phase is active below.
         """
+        # Reactive safety reflex runs FIRST and can pre-empt the mission FSM:
+        # if a front sensor is too close (or we're mid-backup), it drives the
+        # motors itself this step and the normal handler is skipped.
+        if self._safety_reflex():
+            return
+
         if self.mission == Mission.EXPLORE_MAP:
             self._act_explore_map()
 
@@ -921,6 +931,111 @@ class MazeExplorer:
         elif self.mission == Mission.DONE:
             self.robot.stop()
             self._save_once()
+
+    # ---------------------------------------------------------------------- #
+    # Reactive safety reflex  (short-range IR distance sensors)
+    # ---------------------------------------------------------------------- #
+    def _safety_reflex(self):
+        """Last-resort collision avoidance, independent of the planned path.
+
+        The mission FSM drives from the map, which can be wrong (odometry
+        drift, a thin/low obstacle it never mapped).  The four IR rangers see
+        the real world directly.  If a FRONT ranger reads closer than
+        RANGE_STOP_DIST_M, we:
+
+          1. stamp the offending obstacle into the camera-obstacle map, so the
+             next plan actually routes AROUND it instead of straight back in;
+          2. reverse for RANGE_BACKUP_TIME_S;
+          3. force the active FSM (Explorer or GoToPoint) to replan.
+
+        Returns:
+            True if the reflex took control of the motors this step (the
+            normal mission handler must then be skipped), False otherwise.
+        """
+        rng = self.robot.read_range_sensors()
+
+        # Already backing up from an earlier trigger -> keep reversing until
+        # the timer runs out.  Steer gently AWAY from the closer front corner
+        # so the new heading differs from the one that hit the obstacle.
+        if self.now < self._safety_backup_until:
+            turn = C.MAX_TURN_SPEED * 0.4
+            w = turn if rng["fl"] < rng["fr"] else -turn
+            self.robot.set_velocity(-C.RANGE_BACKUP_SPEED, w)
+            return True
+
+        front = min(rng["fl"], rng["fr"])
+        if front < C.RANGE_STOP_DIST_M:
+            print("[safety] front obstacle at %.2f m -> backing up + replan."
+                  % front)
+            self._mark_range_obstacle(rng)
+            self._safety_backup_until = self.now + C.RANGE_BACKUP_TIME_S
+            self._force_replan()
+            self.robot.set_velocity(-C.RANGE_BACKUP_SPEED, 0.0)
+            return True
+
+        return False
+
+    def _mark_range_obstacle(self, rng):
+        """Stamp whatever a front IR ranger just hit into the camera-obstacle
+        map, so replanning treats it as a wall.
+
+        OccupancyGrid.integrate_camera_obstacle() (the ray-tracing version
+        this codebase currently uses) always casts its ray from the CAMERA's
+        own mount point (CAMERA_FORWARD_M / CAMERA_LATERAL_M), not from an
+        arbitrary sensor origin.  The IR rangers are mounted somewhere else
+        entirely (see RANGE_FL_*/RANGE_FR_* in config.py).  So we first
+        compute the TRUE world hit point using the real IR mount geometry,
+        then re-express that same world point as a (range, bearing) pair
+        relative to the camera's mount origin.  The occupied cell ends up at
+        the geometrically correct world position either way -- only the
+        (harmless) free-space ray in between is drawn from the "wrong"
+        origin.
+        """
+        x, y, theta = self.pose
+        cam_x = x + C.CAMERA_FORWARD_M * math.cos(theta) - C.CAMERA_LATERAL_M * math.sin(theta)
+        cam_y = y + C.CAMERA_FORWARD_M * math.sin(theta) + C.CAMERA_LATERAL_M * math.cos(theta)
+
+        ranges, bearings = [], []
+        for key, fwd, lat, yaw in (
+            ("fl", C.RANGE_FL_FWD, C.RANGE_FL_LAT, C.RANGE_FL_YAW),
+            ("fr", C.RANGE_FR_FWD, C.RANGE_FR_LAT, C.RANGE_FR_YAW),
+        ):
+            d = rng[key]
+            if d >= C.RANGE_MARK_MAX_M:
+                continue   # too far to be the culprit; don't clutter the map
+
+            # True IR sensor origin and ray direction (from the Rosbot PROTO
+            # mount geometry), giving the actual world hit point.
+            sx = x + fwd * math.cos(theta) - lat * math.sin(theta)
+            sy = y + fwd * math.sin(theta) + lat * math.cos(theta)
+            ang = theta + yaw
+            hx = sx + d * math.cos(ang)
+            hy = sy + d * math.sin(ang)
+
+            # Re-express as (range, bearing) from the camera's mount origin.
+            dx, dy = hx - cam_x, hy - cam_y
+            r       = math.hypot(dx, dy)
+            bearing = math.atan2(dy, dx) - theta
+
+            # Repeat the same ray several times so the cell lands well above
+            # the obstacle threshold -- otherwise the depth detector (which
+            # may not see this low/thin obstacle at all) could erode a single
+            # mark back to "free" before the replan routes around it.
+            for _ in range(C.RANGE_MARK_STRENGTH):
+                ranges.append(r)
+                bearings.append(bearing)
+
+        if ranges:
+            self.grid.integrate_camera_obstacle(
+                x, y, theta, np.asarray(ranges), np.asarray(bearings)
+            )
+
+    def _force_replan(self):
+        """Discard the current path and make the active FSM plan afresh."""
+        if self.mission in (Mission.GO_BLUE, Mission.GO_YELLOW):
+            self.goto._trigger_replan()
+        else:
+            self.explorer._trigger_replan()
 
     # ---------------------------------------------------------------------- #
     # Mission phase handlers

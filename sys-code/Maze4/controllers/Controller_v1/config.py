@@ -165,11 +165,11 @@ MAX_TURN_SPEED = 0.9    # rad/s  Maximum angular (turning) speed.
 HEADING_KP     = 2.2    # Proportional gain on heading error for pure pursuit.
                           # Increase -> turns more aggressively toward waypoints.
 
-LOOKAHEAD      = 0.20   # m  Pure-pursuit look-ahead distance.
+LOOKAHEAD      = 0.12   # m  Pure-pursuit look-ahead distance.
                           # Larger -> smoother but cuts corners more.
                           # Smaller -> tighter tracking but may oscillate.
 
-WAYPOINT_TOL   = 0.12   # m  A waypoint is considered "reached" when the
+WAYPOINT_TOL   = 0.08   # m  A waypoint is considered "reached" when the
                           # robot is within this distance of it.
 
 # --- Reactive safety (obstacle avoidance directly from the lidar scan) ------
@@ -194,6 +194,27 @@ STUCK_TIME     = 3.0    # s   If the robot moves less than STUCK_DIST in
 
 REVERSE_TIME   = 2.5    # s   How long the robot drives backward when stuck.
                           # After this it replans to a fresh frontier target.
+
+# --- Reactive safety reflex (short-range IR distance sensors) ----------------
+# A last line of defence, independent of the map: if a FRONT distance sensor
+# reads closer than this while the robot is driving, it immediately backs off
+# and forces a fresh plan (see MazeExplorer._safety_reflex).  Catches obstacles
+# the planner missed -- odometry drift, thin/low objects, dynamic surprises.
+RANGE_STOP_DIST_M   = 0.05   # m   Front clearance below which the reflex fires.
+RANGE_BACKUP_TIME_S = 0.7    # s   How long to reverse after a trigger.
+RANGE_BACKUP_SPEED  = 0.12   # m/s Reverse speed during the backup.
+RANGE_MARK_MAX_M    = 0.30   # m   Only stamp the culprit obstacle into the map
+                              #     if it is at least this close (avoids marking
+                              #     far, harmless readings).
+RANGE_MARK_STRENGTH = 3      # How many log-odds hits to stamp per detection, so
+                              #     the mark survives a few depth-detector "free"
+                              #     frames long enough for the replan to avoid it.
+
+# Mount geometry of the two FRONT sensors, straight from the Rosbot PROTO
+# (translation + z-rotation).  Used to place a detected obstacle point in the
+# world so the replan actually routes around it.  (fwd, lateral+left, yaw).
+RANGE_FL_FWD, RANGE_FL_LAT, RANGE_FL_YAW = 0.10,  0.05,  0.13   # front-left
+RANGE_FR_FWD, RANGE_FR_LAT, RANGE_FR_YAW = 0.10, -0.05, -0.13   # front-right
 
 # ===========================================================================
 # Timing / cadence
@@ -350,7 +371,8 @@ ROBOT_CLEARANCE_HEIGHT_M = 0.23   # m
 # those cells (a ray passes them to a farther hit), the normal free-along-
 # the-ray updates erode the wrong padding again.  Over-padding costs at most
 # a small detour; under-padding risks driving through the object.
-CAMERA_OBSTACLE_DEPTH_PAD_M = 0.04   # m
+# CAMERA_OBSTACLE_DEPTH_PAD_M = 0.24   # m
+CAMERA_OBSTACLE_DEPTH_PAD_M = 0.20   # m
 
 # ===========================================================================
 # Coloured target objects (blue / yellow) -- detection + tracking
@@ -376,7 +398,7 @@ YELLOW_VAL_MIN = 0.20 # [0,1].
 OBJECT_INFLATE_CELLS = INFLATE_RADIUS_CELLS
 
 # Distance within which the robot counts as having "reached" a tracked object.
-OBJECT_REACH_TOL = 0.25   # m
+OBJECT_REACH_TOL = 0.30   # m
 
 # --- Colour-object log-odds (Bayesian inverse sensor model, like the lidar) --
 #

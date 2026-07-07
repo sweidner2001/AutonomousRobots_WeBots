@@ -155,6 +155,20 @@ class Robot:
         self.lidar_fov        = self.lidar.getFov()                   # full FoV in rad
         self.lidar_max        = self.lidar.getMaxRange()              # m
 
+        # ---- Short-range IR distance sensors (VL53L0X) -------------------
+        # Four narrow-beam infra-red rangers at the robot's corners: the two
+        # FRONT ones (fl, fr) point forward, the two REAR ones (rl, rr) point
+        # backward.  They catch obstacles right in front of the robot that the
+        # planner missed (e.g. after odometry drift), so the reactive safety
+        # reflex in explorer.py can back off before a collision.  getValue()
+        # returns the distance in metres (lookupTable is identity up to 2 m).
+        self.range_fl = self.robot.getDevice("fl_range")
+        self.range_fr = self.robot.getDevice("fr_range")
+        self.range_rl = self.robot.getDevice("rl_range")
+        self.range_rr = self.robot.getDevice("rr_range")
+        for rs in (self.range_fl, self.range_fr, self.range_rl, self.range_rr):
+            rs.enable(self.timestep)
+
     def _compute_bearings(self):
         """Precompute the angle of each lidar ray in the robot's own frame.
 
@@ -213,6 +227,20 @@ class Robot:
         Array length == lidar_resolution (e.g. 720 rays for the RPLidar A2).
         """
         return np.array(self.lidar.getRangeImage(), dtype=np.float32)
+
+    def read_range_sensors(self):
+        """Return the four IR distance-sensor readings (metres) as a dict.
+
+        Keys: 'fl','fr' (front-left / front-right, pointing FORWARD),
+              'rl','rr' (rear-left / rear-right, pointing BACKWARD).
+        Values are clamped to [0, 2.0] m -- the sensor's usable range.
+        """
+        return {
+            "fl": self.range_fl.getValue(),
+            "fr": self.range_fr.getValue(),
+            "rl": self.range_rl.getValue(),
+            "rr": self.range_rr.getValue(),
+        }
 
     def read_encoders(self):
         """Return current wheel angles (rad) as a dict.
