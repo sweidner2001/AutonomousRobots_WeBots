@@ -399,6 +399,11 @@ class PathPlanner:
                 if blocked[rr, cc] or (rr, cc) in closed or unknown[rr, cc]:
                     continue
 
+                # cutting no corners
+                # if dr != 0 and dc != 0:
+                #     if blocked[r + dr, c] or blocked[r, c + dc]:
+                #         continue
+
                 # Unknown cells are more expensive to cross.
                 cost = step * (C.UNKNOWN_TRAVERSAL_COST if unknown[rr, cc] else 1.0)
                 tentative_g = g_cur + cost
@@ -621,6 +626,7 @@ class PathPlanner:
             raw_start = self._nearest_free(raw_blocked, start_rc, max_r=5)
             if raw_start is None:
                 return None
+            
         gc0, gr0 = grid.world_to_grid(*goal_xy)
         raw_goal = self._nearest_free(raw_blocked, (gr0, gc0))
         if raw_goal is None:
@@ -634,14 +640,43 @@ class PathPlanner:
         safe_reachable = self._flood_fill_free(
             grid.observed, safe_blocked, sr0, sc0, grid.log.shape)
 
-        # --- Step 3: closest point on the raw route still safely reachable --
+        # --- Step 3: overlap of (inflated raw route) and safe reachable ----
+        # Build a "corridor" around the physical raw route, then intersect
+        # with safe-reachable cells. This avoids requiring an exact cell-wise
+        # match between raw_path and safe_reachable.
+        raw_mask = np.zeros(grid.log.shape, dtype=bool)
+        for (r, c) in raw_path:
+            raw_mask[r, c] = True
+
+        path_radius = 3
+        path_struct = np.ones((1 + 2 * path_radius, 1 + 2 * path_radius), dtype=bool)
+        raw_corridor = binary_dilation(raw_mask, structure=path_struct, iterations=1)
+        overlap_mask = raw_corridor & safe_reachable
+
+        if not np.any(overlap_mask):
+            return None
+
+        # The overlap can be 2-3 cells thick. Pick one representative target
+        # by maximising progress along raw_path (furthest toward the object).
+        raw_index = np.full(grid.log.shape, -1, dtype=np.int32)
+        for i, (r, c) in enumerate(raw_path):
+            raw_index[r, c] = i
+
         target_rc = None
-        for (r, c) in reversed(raw_path):   # object end first
-            if safe_reachable[r, c]:
+        best_idx = -1
+        rows, cols = np.where(overlap_mask)
+        for r, c in zip(rows, cols):
+            r0 = max(0, r - path_radius)
+            r1 = min(raw_index.shape[0], r + path_radius + 1)
+            c0 = max(0, c - path_radius)
+            c1 = min(raw_index.shape[1], c + path_radius + 1)
+            local_max = int(np.max(raw_index[r0:r1, c0:c1]))
+            if local_max > best_idx:
+                best_idx = local_max
                 target_rc = (r, c)
-                break
+
         if target_rc is None:
-            return None   # no part of the route is safely reachable
+            return None
 
         # --- Step 4: a normal SAFE path to that closest reachable point -----
         target_xy = grid.grid_to_world(target_rc[1], target_rc[0])

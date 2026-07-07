@@ -78,6 +78,7 @@ class TrackedObject:
         self.seen        = False # True as soon as we detect this colour at all
         self.reachable   = False  # None = not checked yet; True/False once checked
         self.reached     = False # True once the robot has gotten close to it
+        self.was_reachable = False # True once the robot has gotten close to it
 
         self.last_seen_time  = None  # simulation time (s) of the most recent detection
 
@@ -158,6 +159,9 @@ class TrackedObject:
             self.reachable = False   # object centre is off the grid entirely
             return
         self.reachable = bool(reachable_mask[r0:r1, c0:c1].any())
+
+        if self.reachable:
+            self.was_reachable = True
 
 
 

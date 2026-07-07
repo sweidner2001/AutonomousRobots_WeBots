@@ -557,7 +557,7 @@ class GoToPoint:
             # The direct (inflated) plan failed -- but a physical route to the
             # object always exists; the inflation margin just sealed the gap.
             # Fall back to parking as close to the object as is safely
-            # possible (see planner.plan_path_near_blocked_target()).
+            # possible.
             path_rc = self.planner.plan_path_near_blocked_target(
                 self.grid, (pose[0], pose[1]), self.target_xy
             )
@@ -927,6 +927,8 @@ class MazeExplorer:
         if self.explorer.finished or self.explorer.is_spin_seed_phase() is False:
             self._advance_from_explore()
 
+
+
     def _act_search(self, target_obj, go_mission, exhausted_mission):
         """SEARCH_BLUE / SEARCH_YELLOW: keep frontier-exploring (identical to
         EXPLORE_MAP) while watching `target_obj`.  As soon as it has been
@@ -948,12 +950,22 @@ class MazeExplorer:
             self.goto.start(target_obj.world_xy)
             self.mission = go_mission
             return
+        
+        if target_obj.seen and target_obj.was_reachable:
+            print("[mission] %s object found and was reachable at (%.2f, %.2f) -> %s. Additional logic applied."
+                  % (target_obj.color_name, target_obj.world_xy[0],
+                     target_obj.world_xy[1], go_mission))
+            self.goto.start(target_obj.world_xy)
+            self.mission = go_mission
+            return
 
         if self.explorer.finished:
             print("[mission] map fully explored, %s object never found/reachable -> %s"
                   % (target_obj.color_name, exhausted_mission))
             self.explorer.resume()   # in case exhausted_mission is another SEARCH_* state
             self.mission = exhausted_mission
+
+
 
     def _act_go_to(self, target_obj, arrived_mission, fallback_mission):
         """GO_BLUE / GO_YELLOW: drive straight to a known object position.
