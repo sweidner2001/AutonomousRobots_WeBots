@@ -426,8 +426,26 @@ class OccupancyGrid:
         self._add_logodds(log, hit_xs,  hit_ys,  C.L_OBJ_OCC,  C.L_OBJ_CLAMP)
 
     def _add_logodds(self, log, xs, ys, delta, clamp):
-        """Shared helper: add `delta` to `log` at the cells under (xs, ys),
-        clamped to +/- `clamp`.  Out-of-bounds points are dropped."""
+        """Shared helper: add `delta` ONCE per cell under (xs, ys), clamped
+        to +/- `clamp`.  Out-of-bounds points are dropped.
+
+        WHY DE-DUPLICATE TO ONE UPDATE PER CELL
+        ------------------------------------------
+        At close range, the camera's sampled pixel grid is FINER than one
+        occupancy cell: e.g. at 0.3 m, ~150 sampled pixels can fall inside a
+        single 4 cm cell (their physical spacing shrinks with distance).
+        Those are NOT 150 independent observations -- they are the SAME
+        physical patch seen from the SAME viewpoint in the SAME frame.  A
+        naive per-point accumulation (np.add.at) would apply `delta` up to
+        150 times in one frame, instantly slamming the cell to the log-odds
+        clamp ceiling.  Undoing that later needs ~clamp/|L_FREE| separate
+        CORRECTING frames (e.g. ~15 for the object log-odds values) -- which
+        in practice rarely happens from the same vantage point, so a wrong
+        mark effectively never clears.  Collapsing to one update per cell
+        per call fixes this: repeated same-frame sampling of one cell counts
+        as exactly ONE observation, matching a sound Bayesian sensor model
+        (and exactly the pattern fuse_camera_free_space() already uses).
+        """
         if len(xs) == 0:
             return
         cols = ((np.asarray(xs) - self.ox) / self.res).astype(np.int32)
@@ -436,8 +454,13 @@ class OccupancyGrid:
             (cols >= 0) & (cols < self.ncols)
             & (rows >= 0) & (rows < self.nrows)
         )
-        # np.add.at accumulates correctly when several points land on one cell.
-        np.add.at(log, (rows[keep], cols[keep]), delta)
+        rows, cols = rows[keep], cols[keep]
+        if rows.size == 0:
+            return
+        flat = np.unique(rows.astype(np.int64) * self.ncols + cols)
+        rows = (flat // self.ncols).astype(np.int32)
+        cols = (flat %  self.ncols).astype(np.int32)
+        log[rows, cols] += delta
         np.clip(log, -clamp, clamp, out=log)
 
     def _mark_world(self, mask, xs, ys):
@@ -571,10 +594,15 @@ class OccupancyGrid:
 
         Places the sensor origin at the camera's mount offset (the same
         CAMERA_FORWARD_M / CAMERA_LATERAL_M constants floor_hazard.py and
-        colored_objects.py use) and ray-traces every entry as a hit into
-        `log` via _ray().  If pad_m > 0, the stretch from each hit to
-        pad_m metres further along the same ray is ALSO marked occupied
-        (occlusion padding -- see integrate_camera_obstacle's docstring).
+        colored_objects.py use).  FREE cells along each ray are marked
+        per-ray (redundant free evidence is harmless).  OCCUPIED cells (the
+        hit itself, plus the occlusion-padding stretch behind it if
+        pad_m > 0) are collected across ALL rays and applied ONCE PER CELL
+        at the end -- see _add_logodds()'s docstring for why: many candidate
+        points from ONE frame can converge on the SAME cell at close range,
+        and applying L_OCC once per point (instead of once per cell) can
+        slam a cell to the clamp ceiling in a single frame, making it
+        effectively impossible to erase later.
         """
         if len(ranges) == 0:
             return
@@ -587,23 +615,51 @@ class OccupancyGrid:
         cos_a = np.cos(world_ang)
         sin_a = np.sin(world_ang)
 
+        occ_rows, occ_cols = [], []
         for i in range(len(ranges)):
             ex = sx + ranges[i] * cos_a[i]
             ey = sy + ranges[i] * sin_a[i]
             c1, r1 = self.world_to_grid(ex, ey)
-            self._ray(c0, r0, c1, r1, hit=True, log=log, observed=observed)
+            self._mark_free_along_ray(c0, r0, c1, r1, log, observed)
+            if self.in_bounds(c1, r1):
+                occ_rows.append(r1)
+                occ_cols.append(c1)
 
             if pad_m <= 0.0:
                 continue
-            # Occlusion padding: continue the ray behind the visible face and
-            # mark those (unobservable-from-here) cells occupied as well.
-            # [1:] skips the hit cell itself -- _ray() already updated it.
+            # Occlusion padding: continue the ray behind the visible face --
+            # those cells are ALSO occupied evidence, collected the same way.
             ex2 = sx + (ranges[i] + pad_m) * cos_a[i]
             ey2 = sy + (ranges[i] + pad_m) * sin_a[i]
             c2, r2 = self.world_to_grid(ex2, ey2)
             for (c, r) in _bresenham(c1, r1, c2, r2)[1:]:
                 if self.in_bounds(c, r):
-                    log[r, c] = min(log[r, c] + C.L_OCC, C.L_CLAMP)
+                    occ_rows.append(r)
+                    occ_cols.append(c)
+
+        if occ_rows:
+            rows = np.asarray(occ_rows, dtype=np.int64)
+            cols = np.asarray(occ_cols, dtype=np.int64)
+            flat = np.unique(rows * self.ncols + cols)
+            rr = (flat // self.ncols).astype(np.int32)
+            cc = (flat %  self.ncols).astype(np.int32)
+            log[rr, cc] = np.minimum(log[rr, cc] + C.L_OCC, C.L_CLAMP)
+            if observed is not None:
+                observed[rr, cc] = True
+
+    def _mark_free_along_ray(self, c0, r0, c1, r1, log, observed):
+        """Mark cells from (c0,r0) up to (but excluding) (c1,r1) as FREE.
+
+        Split out of _ray() so _integrate_camera_rays() can de-duplicate the
+        OCCUPIED end-cell across all rays separately (see that method's
+        docstring) while still marking free space per-ray as usual.
+        """
+        cells = _bresenham(c0, r0, c1, r1)
+        for (c, r) in cells[:-1]:
+            if self.in_bounds(c, r):
+                log[r, c] = max(log[r, c] + C.L_FREE, -C.L_CLAMP)
+                if observed is not None:
+                    observed[r, c] = True
 
     def _ray(self, c0, r0, c1, r1, hit, log=None, observed=None):
         """Update grid cells along a single laser ray.

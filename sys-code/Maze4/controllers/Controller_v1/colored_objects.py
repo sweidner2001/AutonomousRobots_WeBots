@@ -177,7 +177,8 @@ class TrackedObject:
             return
         self.reachable = bool(reachable_mask[r0:r1, c0:c1].any())
 
-        if self.reachable:
+        if self.reachable and self.was_reachable is False:
+            print(f"TrackedObject.update_reachable: {self.color_name} is reachable at {self.world_xy}")
             self.was_reachable = True
 
 

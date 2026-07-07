@@ -258,6 +258,9 @@ class Explorer:
         if self._spin_accum >= C.SPIN_SEED_TURN:
             print("[explorer] spin complete (%.2f rad) -> PLAN" % self._spin_accum)
             self.phase = self.PLAN
+
+
+
             return 0.0, 0.0   # stop for one step while transitioning
 
         # Keep spinning counterclockwise at 60% of max turn speed.
@@ -1121,7 +1124,7 @@ class MazeExplorer:
         mask the frontier planner already computed this PLAN cycle -- a
         single cell lookup per object, effectively free (see
         TrackedObject.update_reachable)."""
-        if self.blue_object.world_xy is None and self.yellow_object.world_xy is None:
+        if (self.blue_object.world_xy is None and self.yellow_object.world_xy is None) or self.explorer.is_spin_seed_phase() is True:
             return
     
         reachable = self.planner.get_target_reachablity_mask(self.grid, self.pose[:2])
