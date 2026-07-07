@@ -693,7 +693,7 @@ class MazeExplorer:
             self.robot.camera_height,
             self.robot.camera_fov,
             self.robot.camera_depth_min_range,
-            self.robot.camera_depth_max_range,
+            4.0,
         )
         # One TrackedObject instance per colour -- see colored_objects.py for
         # what each field (seen / reachable / reached / world_xy) means.

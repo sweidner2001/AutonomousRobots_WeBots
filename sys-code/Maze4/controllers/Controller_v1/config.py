@@ -28,7 +28,7 @@ so that grid cell [row=nrows/2, col=ncols/2] corresponds to (0, 0).
 UNITS:  metres (m), radians (rad), seconds (s).
 """
 
-VIZALIZATION_NAV_GRID = True
+VIZALIZATION_NAV_GRID = False
 
 # ===========================================================================
 # Robot physical dimensions  (from the Rosbot 2 PROTO file in Webots)
@@ -84,8 +84,8 @@ LIDAR_ANGLE_OFFSET = 0.0  # rad.  Extra rotation if the lidar is mounted
 GRID_RESOLUTION = 0.04   # m per cell side.  Each cell is a 5 cm x 5 cm square.
                           # Smaller -> finer map, but more memory and slower.
 
-GRID_WIDTH_M  = 11.0     # Total map width in metres.  With 0.05 m/cell
-GRID_HEIGHT_M = 11.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
+GRID_WIDTH_M  = 10.0     # Total map width in metres.  With 0.05 m/cell
+GRID_HEIGHT_M = 10.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
 
 # Place the grid origin so that world (0,0) falls exactly in the middle.
 GRID_ORIGIN_X = -GRID_WIDTH_M  / 2.0   # world x of grid column 0
@@ -350,7 +350,7 @@ ROBOT_CLEARANCE_HEIGHT_M = 0.23   # m
 # those cells (a ray passes them to a farther hit), the normal free-along-
 # the-ray updates erode the wrong padding again.  Over-padding costs at most
 # a small detour; under-padding risks driving through the object.
-CAMERA_OBSTACLE_DEPTH_PAD_M = 0.48   # m
+CAMERA_OBSTACLE_DEPTH_PAD_M = 0.44   # m
 
 # ===========================================================================
 # Coloured target objects (blue / yellow) -- detection + tracking
