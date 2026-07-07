@@ -48,6 +48,15 @@ back-project each run's representative pixel and reject it if it sits at
 floor height (within GROUND_PLANE_TOL_M), exactly as floor_hazard.py
 identifies the floor.  Anything else is a genuine raised obstacle.
 
+WHY EXCLUDE "FLYING" SURFACES THE ROBOT FITS UNDER?
+--------------------------------------------------------
+Some hanging surfaces (e.g. the wooden beams spanning the maze) pass the
+run test but are not obstacles at all: their BOTTOM edge is higher than
+the robot, so the robot simply drives underneath.  For every run we
+back-project its bottom pixel (the surface's lowest visible point) and
+compute its height above the ground; if that height clears
+ROBOT_CLEARANCE_HEIGHT_M, the run is skipped.
+
 OUTPUT FORMAT: WHY (range, bearing), NOT WORLD (x, y)?
 ------------------------------------------------------------
 floor_hazard.py and colored_objects.py both return world (x, y) points
@@ -83,7 +92,7 @@ class DepthObstacleDetector:
         read live from the Webots device in robot.py."""
         self.intr = CameraIntrinsics(
             camera_width, camera_height, camera_fov,
-            depth_min_range, 4.5,
+            depth_min_range, 4.0,
         )
 
         # Full-frame scan, same subsampling stride as the other detectors --
@@ -119,8 +128,9 @@ class DepthObstacleDetector:
 
         # ---- Step 1: find a constant-depth vertical run in each column ------
         # For every column we collect ONE representative pixel per qualifying
-        # run: the run's middle row, at the run's median depth.
-        sel_us, sel_vs, sel_depth = [], [], []
+        # run (the run's middle row, at the run's median depth) PLUS the row
+        # of the run's BOTTOM pixel -- needed for the drive-under test below.
+        sel_us, sel_vs, sel_depth, sel_v_bottom = [], [], [], []
         n_cols = depth.shape[1]
         for j in range(n_cols):
             for (start, end) in self._column_runs(
@@ -132,29 +142,44 @@ class DepthObstacleDetector:
                 sel_us.append(us[mid, j])
                 sel_vs.append(vs[mid, j])
                 sel_depth.append(float(np.median(depth[start:end, j])))
+                # Largest row index in the run = lowest point of the surface
+                # in the image = physically closest to the floor.
+                sel_v_bottom.append(vs[end - 1, j])
 
         if not sel_us:
             return empty
 
-        us_f    = np.asarray(sel_us,    dtype=np.float32)
-        vs_f    = np.asarray(sel_vs,    dtype=np.float32)
-        depth_f = np.asarray(sel_depth, dtype=np.float32)
+        us_f       = np.asarray(sel_us,       dtype=np.float32)
+        vs_f       = np.asarray(sel_vs,       dtype=np.float32)
+        depth_f    = np.asarray(sel_depth,    dtype=np.float32)
+        v_bottom_f = np.asarray(sel_v_bottom, dtype=np.float32)
 
         # ---- Step 2: back-project (pinhole model, same as camera_geometry.py) --
         right_cam = (us_f - self.intr.cx) * depth_f / self.intr.f
         down_cam  = (vs_f - self.intr.cy) * depth_f / self.intr.f
         forward_lvl, drop_lvl = tilt_correct(down_cam, depth_f, C.CAMERA_TILT_RAD)
 
-        # ---- Step 3: exclude the ordinary floor (safety net) -------------------
+        # ---- Step 3a: exclude the ordinary floor (safety net) ------------------
         # Same ground-plane test as floor_hazard.py, but INVERTED: we KEEP
         # everything that is NOT at floor height.
         height_above_ground = C.CAMERA_HEIGHT_M - drop_lvl
         not_floor = np.abs(height_above_ground) > C.GROUND_PLANE_TOL_M
-        if not np.any(not_floor):
+
+        # ---- Step 3b: exclude "flying" surfaces the robot can drive UNDER ------
+        # Back-project each run's BOTTOM pixel and compute its height above
+        # the ground.  If even the surface's lowest visible point clears the
+        # robot (plus margin), it is a hanging beam, not a wall -- skip it.
+        down_bottom       = (v_bottom_f - self.intr.cy) * depth_f / self.intr.f
+        _, drop_bottom    = tilt_correct(down_bottom, depth_f, C.CAMERA_TILT_RAD)
+        bottom_height     = C.CAMERA_HEIGHT_M - drop_bottom
+        can_drive_under   = bottom_height > C.ROBOT_CLEARANCE_HEIGHT_M
+
+        keep = not_floor & ~can_drive_under
+        if not np.any(keep):
             return empty
 
-        forward_lvl = forward_lvl[not_floor]
-        right_cam   = right_cam[not_floor]
+        forward_lvl = forward_lvl[keep]
+        right_cam   = right_cam[keep]
 
         # ---- Step 4: reduce to (range, bearing) in the robot frame -------------
         # Same sign convention as robot.bearings: positive right_cam (image

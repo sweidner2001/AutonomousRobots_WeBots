@@ -28,7 +28,7 @@ so that grid cell [row=nrows/2, col=ncols/2] corresponds to (0, 0).
 UNITS:  metres (m), radians (rad), seconds (s).
 """
 
-VIZALIZATION_NAV_GRID = False
+VIZALIZATION_NAV_GRID = True
 
 # ===========================================================================
 # Robot physical dimensions  (from the Rosbot 2 PROTO file in Webots)
@@ -331,6 +331,15 @@ DEPTH_OBSTACLE_FLAT_TOL_M = 0.05   # m
 # are already handled by the lidar; noise subtends less.  Tune per world.
 DEPTH_OBSTACLE_MIN_RUN_PX = 3
 DEPTH_OBSTACLE_MAX_RUN_PX = 25
+
+# "Flying" obstacles: a hanging surface (e.g. a beam spanning the maze) is
+# only a real obstacle if the robot cannot fit UNDERNEATH it.  For every
+# detected run we back-project its BOTTOM pixel (the surface's lowest
+# visible point) and check its height above the floor: if even that lowest
+# point is above this clearance, the robot simply drives under -- do NOT
+# mark it as a wall.  RosBot 2 is ~0.20 m tall (lidar tower included);
+# keep a few cm of safety margin on top.
+ROBOT_CLEARANCE_HEIGHT_M = 0.23   # m
 
 # The camera only ever sees an obstacle's NEAR face -- everything behind it
 # is occluded, so the object's true depth is unknowable from one viewpoint.
