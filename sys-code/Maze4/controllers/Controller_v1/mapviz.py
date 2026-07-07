@@ -138,7 +138,7 @@ class MapViz:
         self.vizualization_nav_grid = vizualization_nav_grid
         if self.ok and vizualization_nav_grid:
             try:
-                subplots = 3
+                subplots = 4
                 self._fig2, self._axes2 = plt.subplots(
                     1, subplots, figsize=(15, 5)
                 )
@@ -148,6 +148,7 @@ class MapViz:
                     "Nav grid  (+pose)",
                     "Frontier mask",
                     "Frontier clusters",
+                    "A* debug",
                 ]
                 for ax, lbl in zip(self._axes2, _labels):
                     ax.set_title(lbl, fontsize=9)
@@ -281,7 +282,7 @@ class MapViz:
             self.ok = False
 
     # ---------------------------------------------------------------------- #
-    def update_drive_map(self, pose = None, nav=None, fmask=None, fclusters=None):
+    def update_drive_map(self, pose = None, nav=None, fmask=None, fclusters=None, astar_debug=None):
         """Refresh the five-panel debug window with internal planner data.
 
         Each panel shows one stage of the exploration pipeline:
@@ -343,8 +344,42 @@ class MapViz:
             #            centroid cell shown as a bright yellow dot.
             img5 = self._render_clusters(shape, fclusters)
 
+            # Image 6 -- A* debug: show blocked/unknown plus latest search
+            # state (closed set, open set, final path, start, goal).
+            img6 = np.full(shape + (3,), 0.55, dtype=np.float32)
+            img6[nav == 1.0] = 1.0
+            img6[nav == 0.0] = 0.0
+
+            if astar_debug is not None:
+                blocked = astar_debug.get("blocked")
+                unknown = astar_debug.get("unknown")
+                closed = astar_debug.get("closed")
+                opened = astar_debug.get("open")
+                path = astar_debug.get("path")
+                start = astar_debug.get("start")
+                goal = astar_debug.get("goal")
+
+                if blocked is not None and blocked.shape == shape:
+                    img6[blocked] = (0.02, 0.02, 0.02)
+                if unknown is not None and unknown.shape == shape:
+                    img6[unknown] = (0.35, 0.35, 0.35)
+                if closed is not None and closed.shape == shape:
+                    img6[closed] = (0.25, 0.45, 0.95)
+                if opened is not None and opened.shape == shape:
+                    img6[opened] = (0.25, 0.85, 0.95)
+                if path is not None and path.shape == shape:
+                    img6[path] = (0.10, 0.90, 0.25)
+                if start is not None:
+                    sr, sc = start
+                    if 0 <= sr < shape[0] and 0 <= sc < shape[1]:
+                        img6[sr, sc] = (1.0, 0.10, 0.10)
+                if goal is not None:
+                    gr, gc = goal
+                    if 0 <= gr < shape[0] and 0 <= gc < shape[1]:
+                        img6[gr, gc] = (1.0, 0.10, 1.0)
+
             # imgs = [img1, img2, img3, img4, img5]
-            imgs = [img3, img4, img5]
+            imgs = [img3, img4, img5, img6]
             # imgs = [img for img in imgs if img is not None]  # drop any Nones
 
             # -------------------------------------------------------------- #

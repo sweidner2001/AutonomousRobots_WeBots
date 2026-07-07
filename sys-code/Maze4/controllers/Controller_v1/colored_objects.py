@@ -43,12 +43,16 @@ detection therefore automatically route the robot around a tracked object --
 Because it is log-odds (not a sticky mask), a false detection is ERASED once
 the camera looks at that spot again and no longer sees the colour.
 
-WHY NO GROUND-PLANE FILTER (UNLIKE floor_hazard.py)?
+THE GROUND-PLANE FILTER (INVERSE of floor_hazard.py's)
 --------------------------------------------------------
 floor_hazard.py only wants points that lie FLAT ON THE FLOOR (green tiles).
-Blue/yellow objects are assumed to be upright items (boxes, pillars, etc.)
-that can appear at any height in the image, so we scan the FULL frame
-instead of only the rows below the horizon.
+Blue/yellow objects are the opposite: upright items (boxes, pillars, etc.)
+that can appear at any height in the image -- so we scan the FULL frame,
+but a pixel only counts as a HIT if it sits ABOVE the ground plane.
+Floor-height pixels can never be object hits, only free evidence: under
+some lighting the grey floor renders slightly blue-ish and would otherwise
+pass the HSV test on every frame, turning the entire explored floor into
+"blue object" and blocking the whole map for the planner.
 """
 
 import math
@@ -269,22 +273,37 @@ class ColorObjectDetector:
 
         # ---- Step 4: world (x, y) for every candidate point -----------------
         # (computed once, then filtered per colour below)
-        forward_lvl, _drop_lvl = tilt_correct(y_cam, z_cam, C.CAMERA_TILT_RAD)
+        forward_lvl, drop_lvl = tilt_correct(y_cam, z_cam, C.CAMERA_TILT_RAD)
         right_lvl = x_cam
         world_xs, world_ys = camera_local_to_world(
             forward_lvl, right_lvl, pose, C.CAMERA_FORWARD_M, C.CAMERA_LATERAL_M
         )
+
+        # ---- Step 5: hits must be ABOVE the floor plane ----------------------
+        # The tracked objects are upright items; the floor is at height ~0.
+        # Under some lighting the grey floor renders slightly BLUE-ish and can
+        # sneak past the HSV test -- and because such pixels would count as
+        # "hits", no free evidence would ever erode them: the whole explored
+        # floor turns into "blue object" and the planner blocks the entire
+        # map (A* can no longer reach anything).  Requiring hits to sit above
+        # the ground plane kills that failure mode regardless of lighting:
+        # floor-height pixels can only ever be FREE evidence.
+        height_above_ground = C.CAMERA_HEIGHT_M - drop_lvl
+        above_floor = height_above_ground > C.GROUND_PLANE_TOL_M
 
         result = {}
         for name, (h_min, h_max, s_min, v_min) in (
             ("blue",   (C.BLUE_HUE_MIN,   C.BLUE_HUE_MAX,   C.BLUE_SAT_MIN,   C.BLUE_VAL_MIN)),
             ("yellow", (C.YELLOW_HUE_MIN, C.YELLOW_HUE_MAX, C.YELLOW_SAT_MIN, C.YELLOW_VAL_MIN)),
         ):
-            match = (hue >= h_min) & (hue <= h_max) & (sat >= s_min) & (val >= v_min)
-            # Every valid pixel is either a "hit" (this colour) or a "free"
-            # observation (visible, but some other colour).  Both are returned:
-            # OccupancyGrid.update_object_observation() uses the hits as
-            # positive evidence and the free points as negative evidence.
+            match = ((hue >= h_min) & (hue <= h_max)
+                     & (sat >= s_min) & (val >= v_min)
+                     & above_floor)
+            # Every valid pixel is either a "hit" (this colour, above the
+            # floor) or a "free" observation (visible, but not the object --
+            # including any colour-matching pixels ON the floor).  Both are
+            # returned: OccupancyGrid.update_object_observation() uses hits
+            # as positive evidence and free points as negative evidence.
             result[name] = (
                 world_xs[match],  world_ys[match],
                 world_xs[~match], world_ys[~match],

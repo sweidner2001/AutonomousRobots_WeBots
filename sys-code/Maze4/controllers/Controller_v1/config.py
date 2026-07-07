@@ -350,7 +350,7 @@ ROBOT_CLEARANCE_HEIGHT_M = 0.23   # m
 # those cells (a ray passes them to a farther hit), the normal free-along-
 # the-ray updates erode the wrong padding again.  Over-padding costs at most
 # a small detour; under-padding risks driving through the object.
-CAMERA_OBSTACLE_DEPTH_PAD_M = 0.44   # m
+CAMERA_OBSTACLE_DEPTH_PAD_M = 0.04   # m
 
 # ===========================================================================
 # Coloured target objects (blue / yellow) -- detection + tracking

@@ -76,6 +76,10 @@ import Maze4.controllers.Controller_v1.config as C
 class PathPlanner:
     """Provides obstacle inflation, A* planning, and frontier-target selection."""
 
+    def __init__(self):
+        # Snapshot of the most recent A* search for visual debugging.
+        self.last_astar_debug = None
+
     # The 8 possible move directions from any grid cell.
     # Format: (delta_row, delta_col, move_cost)
     # Cardinal moves (up/down/left/right) cost 1.0.
@@ -129,24 +133,27 @@ class PathPlanner:
     #     return blocked
     
 
-    def get_block_cells_for_target_navigation(self, grid):
-        hazard_blocked = self._inflate(grid.hazard_mask(),    C.HAZARD_INFLATE_CELLS)
+    def get_block_cells_for_target_navigation(self, grid, 
+                                              hazard_inflate_cells=C.HAZARD_INFLATE_CELLS, 
+                                              object_inflate_cells=C.OBJECT_INFLATE_CELLS, 
+                                              inflate_radius_cells=C.INFLATE_RADIUS_CELLS):
+        hazard_blocked = self._inflate(grid.hazard_mask(),    hazard_inflate_cells)
 
         blue_mask = grid.reconciled_object_mask("blue")
         yellow_mask = grid.reconciled_object_mask("yellow")
         object_area = blue_mask | yellow_mask
 
 
-        object_mask_for_delete_frontiers = self._inflate(object_area, C.OBJECT_INFLATE_CELLS - 1)
+        object_mask_for_delete_frontiers = self._inflate(object_area, object_inflate_cells - 1)
         occ_mask_delete_lidar_scan_to_target = grid.occ_mask() & object_mask_for_delete_frontiers
         nav_to_target_occ_mask = grid.occ_mask().copy()
         nav_to_target_occ_mask[occ_mask_delete_lidar_scan_to_target] = False
-        wall_blocked  = self._inflate(nav_to_target_occ_mask, C.INFLATE_RADIUS_CELLS)
+        wall_blocked  = self._inflate(nav_to_target_occ_mask, inflate_radius_cells)
         wall_blocked[occ_mask_delete_lidar_scan_to_target] = False
 
         # Low, lidar-blind obstacles (camera-only map) block the target route
         # too -- same as walls (see occupancy_grid.integrate_camera_obstacle).
-        camera_obs_blocked = self._inflate(grid.camera_obstacle_mask(), C.INFLATE_RADIUS_CELLS)
+        camera_obs_blocked = self._inflate(grid.camera_obstacle_mask(), inflate_radius_cells)
 
         blocked = wall_blocked | hazard_blocked | camera_obs_blocked
         return blocked
@@ -343,19 +350,55 @@ class PathPlanner:
         sr, sc = start_rc
         gr, gc = goal_rc
 
+        def _store_debug(success, reason, came_from=None, cur=None, open_heap=None, closed=None):
+            if C.VIZALIZATION_NAV_GRID is False:
+                return 
+            
+            closed_mask = np.zeros(blocked.shape, dtype=bool)
+            if closed:
+                for (r, c) in closed:
+                    closed_mask[r, c] = True
+
+            open_mask = np.zeros(blocked.shape, dtype=bool)
+            if open_heap:
+                for _, __, (r, c) in open_heap:
+                    open_mask[r, c] = True
+
+            path_mask = np.zeros(blocked.shape, dtype=bool)
+            if success and came_from is not None and cur is not None:
+                path = self._reconstruct(came_from, cur)
+                for (r, c) in path:
+                    path_mask[r, c] = True
+
+            self.last_astar_debug = {
+                "success": bool(success),
+                "reason": reason,
+                "start": (sr, sc),
+                "goal": (gr, gc),
+                "blocked": blocked.copy(),
+                "unknown": unknown.copy(),
+                "closed": closed_mask,
+                "open": open_mask,
+                "path": path_mask,
+            }
+
         # --- Sanity checks -------------------------------------------------
         # Both start and goal must lie inside the grid.
         if not (0 <= sr < nrows and 0 <= sc < ncols):
+            _store_debug(False, "start_out_of_bounds")
             return None
         if not (0 <= gr < nrows and 0 <= gc < ncols):
+            _store_debug(False, "goal_out_of_bounds")
             return None
         # Goal must not be a blocked (wall) cell.
         if blocked[gr, gc]:
+            _store_debug(False, "goal_blocked")
             return None
         # Start must not be a blocked cell either.
         # This can happen when the robot is very close to a wall and the
         # inflation zone covers the robot's own grid cell.
         if blocked[sr, sc]:
+            _store_debug(False, "start_blocked")
             return None
 
         # --- Octile heuristic: exact lower bound for 8-connected grids ----
@@ -388,6 +431,7 @@ class PathPlanner:
 
             # Goal reached -> reconstruct and return the path.
             if cur == (gr, gc):
+                _store_debug(True, "ok", came_from=came_from, cur=cur, open_heap=open_heap, closed=closed)
                 return self._reconstruct(came_from, cur)
 
             r, c = cur
@@ -417,6 +461,7 @@ class PathPlanner:
                         (tentative_g + h(rr, cc), tentative_g, (rr, cc))
                     )
 
+        _store_debug(False, "no_path", open_heap=open_heap, closed=closed)
         return None  # no path exists
 
     @staticmethod
@@ -620,20 +665,31 @@ class PathPlanner:
         start_rc = (sr0, sc0)
 
         # --- Step 1: raw physical route to the object (no inflation) --------
-        raw_blocked = self._raw_blocked_for_target(grid)
-        raw_start = start_rc
-        if raw_blocked[sr0, sc0]:
-            raw_start = self._nearest_free(raw_blocked, start_rc, max_r=5)
-            if raw_start is None:
-                return None
+        
+        for i in range(min(C.HAZARD_INFLATE_CELLS, C.OBJECT_INFLATE_CELLS, C.INFLATE_RADIUS_CELLS)):
+            raw_blocked = self.get_block_cells_for_target_navigation(grid, C.HAZARD_INFLATE_CELLS - i, 
+                                                                 C.OBJECT_INFLATE_CELLS - i, 
+                                                                 C.INFLATE_RADIUS_CELLS - i)
+
+
+            # raw_blocked = self._raw_blocked_for_target(grid)
+            raw_start = start_rc
+            if raw_blocked[sr0, sc0]:
+                raw_start = self._nearest_free(raw_blocked, start_rc, max_r=5)
+                if raw_start is None:
+                    return None
             
-        gc0, gr0 = grid.world_to_grid(*goal_xy)
-        raw_goal = self._nearest_free(raw_blocked, (gr0, gc0))
-        if raw_goal is None:
-            return None
-        raw_path = self.astar(raw_blocked, unknown, raw_start, raw_goal)
+            gc0, gr0 = grid.world_to_grid(*goal_xy)
+            raw_goal = self._nearest_free(raw_blocked, (gr0, gc0))
+            if raw_goal is None:
+                return None
+            raw_path = self.astar(raw_blocked, unknown, raw_start, raw_goal)
+            if raw_path is not None:
+                break
+                # return None   # not even a physical route -- give up
+
         if raw_path is None:
-            return None   # not even a physical route -- give up
+            return None
 
         # --- Step 2: the safe (inflated) reachable set from the robot -------
         safe_blocked   = self.get_block_cells_for_target_navigation(grid)

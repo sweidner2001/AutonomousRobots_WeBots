@@ -1039,6 +1039,7 @@ class MazeExplorer:
                 nav = self.explorer._nav_cache,         # image 3 + robot pose
                 fmask = self.explorer._fmask_cache,      # image 4
                 fclusters = self.explorer._fcluster_cache,   # image 5 (list of cluster dicts)
+                astar_debug = self.planner.last_astar_debug,
             )
 
 
