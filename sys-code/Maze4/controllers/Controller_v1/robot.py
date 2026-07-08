@@ -73,6 +73,12 @@ class Robot:
 
         self._init_devices()                  # get handles + enable sensors
         self.bearings = self._compute_bearings()  # precompute ray angles once
+        # Boolean mask, True for rays inside the configured usable lidar FOV
+        # (see config.py LIDAR_USE_FOV_DEG) -- computed once since bearings
+        # never change.  read_lidar() sets everything outside the window to
+        # inf ("no return"), so every existing consumer automatically
+        # ignores it without needing to know this restriction exists.
+        self._lidar_angle_mask = self._compute_lidar_angle_mask()
         self.previous_v = 0.0                   # last commanded forward speed (m/s)
 
     # ---------------------------------------------------------------------- #
@@ -195,6 +201,28 @@ class Robot:
         # at an angle or the scan appears mirrored).
         return C.LIDAR_ANGLE_SIGN * bearings + C.LIDAR_ANGLE_OFFSET
 
+    def _compute_lidar_angle_mask(self):
+        """Boolean mask (len == lidar_resolution): True for every ray inside
+        the configured usable field of view.
+
+        See config.py -- LIDAR_USE_FOV_DEG / LIDAR_USE_FOV_CENTER_DEG.  With
+        LIDAR_USE_FOV_DEG = None (the default) every ray is used, i.e. the
+        sensor's full native FOV (typically 360 deg for the RPLidar A2).
+        Setting e.g. LIDAR_USE_FOV_DEG = 180 restricts the robot to a
+        180 deg forward-facing window (90 deg left + 90 deg right of
+        LIDAR_USE_FOV_CENTER_DEG) -- everything behind the robot is then
+        treated exactly like "no return".
+        """
+        if C.LIDAR_USE_FOV_DEG is None:
+            return np.ones_like(self.bearings, dtype=bool)
+
+        half_fov = np.radians(C.LIDAR_USE_FOV_DEG) / 2.0
+        center   = np.radians(C.LIDAR_USE_FOV_CENTER_DEG)
+        # Angular distance from each ray's bearing to the window centre,
+        # wrapped correctly across the +/-180 deg seam.
+        diff = (self.bearings - center + np.pi) % (2 * np.pi) - np.pi
+        return np.abs(diff) <= half_fov
+
     # ---------------------------------------------------------------------- #
     # Simulation stepping
     # ---------------------------------------------------------------------- #
@@ -220,13 +248,19 @@ class Robot:
     # Sensor readings
     # ---------------------------------------------------------------------- #
     def read_lidar(self):
-        """Return the latest 360° lidar scan as a NumPy float32 array.
+        """Return the latest lidar scan as a NumPy float32 array.
 
         Each element is the measured distance (in metres) for one ray.
-        No-return rays (beam missed everything) are represented as inf.
+        No-return rays (beam missed everything) are represented as inf --
+        and so is every ray OUTSIDE the configured usable FOV (see
+        config.py LIDAR_USE_FOV_DEG / _compute_lidar_angle_mask()), so a
+        restricted FOV behaves exactly like a sensor that physically can't
+        see behind that window; no other module needs to know about it.
         Array length == lidar_resolution (e.g. 720 rays for the RPLidar A2).
         """
-        return np.array(self.lidar.getRangeImage(), dtype=np.float32)
+        ranges = np.array(self.lidar.getRangeImage(), dtype=np.float32)
+        ranges[~self._lidar_angle_mask] = np.inf
+        return ranges
 
     def read_range_sensors(self):
         """Return the four IR distance-sensor readings (metres) as a dict.

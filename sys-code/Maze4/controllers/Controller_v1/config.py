@@ -58,7 +58,7 @@ LIDAR_OFFSET_X  = 0.02   # m, positive = forward of robot centre.
 LIDAR_MIN_RANGE = 0.20   # m.  Ignore returns closer than this.
                           # The RPLidar A2 is unreliable below ~0.2 m.
 
-LIDAR_USE_RANGE = 6.0    # m.  Cap how far a free-space ray is drawn into
+LIDAR_USE_RANGE = 5.0    # m.  Cap how far a free-space ray is drawn into
                           # the map.  Rays that hit nothing or hit beyond
                           # this distance are treated as "no obstacle seen"
                           # (they still mark free space up to this distance).
@@ -69,6 +69,21 @@ LIDAR_USE_RANGE = 6.0    # m.  Cap how far a free-space ray is drawn into
 LIDAR_ANGLE_SIGN   = 1.0  # +1 = normal, -1 = mirror the scan horizontally
 LIDAR_ANGLE_OFFSET = 0.0  # rad.  Extra rotation if the lidar is mounted
                             # at an angle.  Usually 0.
+
+# --- Restrict the lidar to a narrower field of view -------------------------
+# By default the full sensor FOV is used (typically 360 deg for the RPLidar
+# A2 -- rays cover the whole circle around the robot).  Set LIDAR_USE_FOV_DEG
+# to a smaller number to use only a WINDOW of that many degrees, centred on
+# LIDAR_USE_FOV_CENTER_DEG.  Example: 180 -> a forward-facing half-circle,
+# 90 deg to the left and 90 deg to the right of the centre bearing.
+# Rays outside the window are treated exactly like "no return" (see
+# robot.py -- read_lidar() / _compute_lidar_angle_mask()), so every existing
+# consumer (map integration, frontier exploration, the safety reflex, ...)
+# automatically ignores them -- no other module needs to change.
+LIDAR_USE_FOV_DEG        = 270   # None = use the full sensor FOV. Degrees otherwise.
+LIDAR_USE_FOV_CENTER_DEG = 0.0    # deg. Bearing at the centre of the window;
+                                    # 0 = straight ahead, positive = left,
+                                    # negative = right (same convention as bearings).
 
 # ===========================================================================
 # Occupancy grid (the robot's internal map)
