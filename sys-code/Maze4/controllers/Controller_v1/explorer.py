@@ -1163,6 +1163,13 @@ class MazeExplorer:
         was discovered mid-drive that blocks the only path), falls back to
         `fallback_mission` so the robot resumes searching/exploring instead
         of getting stuck.
+
+        On failure we call target_obj.mark_unreachable() (not just
+        `target_obj.reachable = False`) -- it ALSO clears the sticky
+        `was_reachable` flag and starts a cooldown, both required so
+        _act_search() doesn't switch straight back to `arrived_mission`'s
+        GO_* sibling on its very next check (see mark_unreachable()'s
+        docstring for the full "why").
         """
         v, w = self.goto.update(self.pose, self.ranges, self.robot.bearings, self.now)
         self.robot.set_velocity(v, w)
@@ -1175,7 +1182,7 @@ class MazeExplorer:
         elif self.goto.failed:
             print("[mission] could not reach the %s object after all -> back to %s"
                   % (target_obj.color_name, fallback_mission))
-            target_obj.reachable = False   # force a fresh reachability check
+            target_obj.mark_unreachable()
             self.explorer.resume()
             self.mission = fallback_mission
 

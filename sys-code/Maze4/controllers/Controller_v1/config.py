@@ -262,7 +262,7 @@ RANGE_FR_FWD, RANGE_FR_LAT, RANGE_FR_YAW = 0.10, -0.05, -0.13   # front-right
 MAP_EVERY   = 2    # Integrate a lidar scan into the map every N control steps.
                     # Step ≈ dt ms, so MAP_EVERY=2 gives one map update per 2 dt.
 
-PLAN_PERIOD = 2.0  # s   Force a replan this often while driving.  This allows
+PLAN_PERIOD = 3.0  # s   Force a replan this often while driving.  This allows
                     # the robot to react when newly discovered walls block the
                     # current path.
 
@@ -399,7 +399,7 @@ DEPTH_OBSTACLE_MAX_RUN_PX = 25
 # point is above this clearance, the robot simply drives under -- do NOT
 # mark it as a wall.  RosBot 2 is ~0.20 m tall (lidar tower included);
 # keep a few cm of safety margin on top.
-ROBOT_CLEARANCE_HEIGHT_M = 0.23   # m
+ROBOT_CLEARANCE_HEIGHT_M = 0.24   # m
 
 # The camera only ever sees an obstacle's NEAR face -- everything behind it
 # is occluded, so the object's true depth is unknowable from one viewpoint.
@@ -423,7 +423,7 @@ CAMERA_OBSTACLE_DEPTH_PAD_M = 0.20   # m
 # HSV colour bands differ, and objects are NOT restricted to the floor
 # plane (they can appear anywhere in the frame).
 
-BLUE_HUE_MIN = 200   # degrees.  Blue hue band lower bound.
+BLUE_HUE_MIN = 220   # degrees.  Blue hue band lower bound.
 BLUE_HUE_MAX = 250   # degrees.  Upper bound.
 BLUE_SAT_MIN = 0.35  # [0,1]. Minimum saturation (rules out grey/white).
 BLUE_VAL_MIN = 0.20  # [0,1]. Minimum brightness (rules out near-black shadow).
@@ -467,6 +467,16 @@ OBJECT_INFLATE_CELLS = INFLATE_RADIUS_CELLS
 
 # Distance within which the robot counts as having "reached" a tracked object.
 OBJECT_REACH_TOL = 0.30   # m
+
+# How long (sim seconds) to suppress reachability checks for a tracked
+# object after GoToPoint's OWN pathfinding fails to reach it -- see
+# colored_objects.py TrackedObject.mark_unreachable() for the full "why".
+# Long enough to give SEARCH_BLUE/SEARCH_YELLOW a real chance to explore
+# more map (a few PLAN_PERIOD cycles) before the mission is allowed to
+# retry GO_BLUE/GO_YELLOW; too short and it retries the identical failing
+# route almost immediately, too long and a route that becomes reachable
+# soon after gets ignored for a while.
+OBJECT_UNREACHABLE_COOLDOWN_S = 12.0   # s
 
 # --- Colour-object log-odds (Bayesian inverse sensor model, like the lidar) --
 #

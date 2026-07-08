@@ -216,6 +216,14 @@ class TrackedObject:
         return ("TrackedObject(%s: seen=%s pos=%s reachable=%s reached=%s)"
                 % (self.color_name, self.seen, pos, self.reachable,
                    self.reached))
+    
+    
+    def mark_unreachable(self):
+        """
+        Mark this object as temporarily unreachable.
+        """
+        self.reachable        = False
+        self.was_reachable    = False
 
 
 # ============================================================================
@@ -375,3 +383,7 @@ class ColorObjectDetector:
             )
 
         return result
+    
+
+
+
