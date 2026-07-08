@@ -91,6 +91,7 @@ at all -- the target is already known.  See the GoToPoint class docstring.
 import math
 import os
 
+import cv2
 import numpy as np
 
 import Maze4.controllers.Controller_v1.config as C
@@ -155,6 +156,14 @@ class Explorer:
         self._path_rc   = None   # path as grid (row, col) cells
         self.world_path = None   # path as world (x, y) metres
         self.target_xy  = None   # frontier target world position
+
+        # Sticky reference for target SELECTION hysteresis (see planner.py --
+        # choose_target()).  Unlike target_xy (cleared by _trigger_replan()
+        # every time a replan starts), this persists across replans -- it is
+        # only updated when a new target is actually chosen -- so choose_target
+        # can always compare "what did we pick last time" even mid-replan.
+        self._prev_target_xy = None
+        self._prev_target_counter = 0
 
         # Cached blocked mask to avoid rebuilding it every step.
         self._blocked_cache = None
@@ -298,6 +307,11 @@ class Explorer:
             self.phase    = self.DONE
             self.finished = True
             return 0.0, 0.0
+        
+        
+
+
+
 
         # --- Step 3: clustering ----------------------------------------------
         clusters = self.frontier.cluster(fmask)
@@ -305,9 +319,37 @@ class Explorer:
         print("[explorer] PLAN: %d frontier cells -> %d clusters, robot=(%.2f,%.2f)"
               % (int(fmask.sum()), len(clusters), pose[0], pose[1]))
 
+
+
+        # sort out candidates that are sourounded from free cells:
+        raw_blocked_mask = self.planner.get_raw_blocked_cells(self.grid)
+        free_mask = ~self.grid.unknown_mask() & ~raw_blocked_mask
+
+        offset = int((C.FRONTIER_ISOLATION_CIRCLE_DIA - 1) / 2)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (C.FRONTIER_ISOLATION_CIRCLE_DIA, C.FRONTIER_ISOLATION_CIRCLE_DIA))
+
+
+        for cl in clusters:
+            x = cl["centroid"][0]
+            y = cl["centroid"][1]
+            x_start = max(0, x - offset)
+            x_end = min(free_mask.shape[0], x + offset + 1)
+            y_start = max(0, y - offset)
+            y_end = min(free_mask.shape[1], y + offset + 1)
+
+            analyze_area = free_mask[x_start:x_end, y_start:y_end]
+            pixel_in_circle = analyze_area[kernel == 1]
+            count_free_space = np.sum(pixel_in_circle)  
+
+            if np.sum(kernel) - count_free_space <= C.FRONTIER_ISOLATION_MAX_UNKNOWN_CELLS:
+                self._blacklisted.add(cl["centroid"])
+        
+
+
         # Skip clusters whose centroid was previously blacklisted as unreachable.
         candidates = [cl for cl in clusters
                       if cl["centroid"] not in self._blacklisted]
+        
         if not candidates:
             print("[explorer] all frontiers blacklisted -> clearing blacklist.")
             self._blacklisted.clear()
@@ -317,8 +359,9 @@ class Explorer:
         # unknown mask: cells with nav=0.5 cost more to cross (exploration penalty).
         unknown = (nav == 0.5)
         path_rc, target = self.planner.choose_target(
-            self.grid, candidates, (pose[0], pose[1]), blocked, unknown
-        )
+            self.grid, candidates, (pose[0], pose[1]), blocked, unknown,
+            prev_target_xy=self._prev_target_xy,
+        ) 
 
         if path_rc is None or target is None:
             self._fail_count += 1
@@ -345,7 +388,25 @@ class Explorer:
         self.world_path = self.planner.path_to_world(self.grid, path_rc)
         gr, gc          = target["centroid"]
         self.target_xy  = self.grid.grid_to_world(gc, gr)
+           # sticky reference for next PLAN cycle
         self._current_target_centroid = target["centroid"]
+
+        if self._prev_target_xy is not None:
+            if math.hypot(self.target_xy[0] - self._prev_target_xy[0], self.target_xy[1] - self._prev_target_xy[1]) < C.FRONTIER_STICKINESS_MATCH_TOL_M:
+                # The newly chosen target is within the stickiness radius of the
+                # previous target, so we consider it "the same" for hysteresis.
+                self._prev_target_counter += 1
+            else:
+                self._prev_target_counter = 0
+
+        self._prev_target_xy = self.target_xy
+
+        if self._prev_target_counter > C.FRONTIER_STICKINESS_COUNT:
+            print("[explorer] target %s has been chosen %d times in a row -> "
+                  "clearing previous target."
+                  % (str(self._prev_target_xy), self._prev_target_counter))
+            self._prev_target_counter = 0
+            self._prev_target_xy = None
 
         self.pilot.set_path(self.world_path)
         self._last_plan_time     = now
@@ -421,8 +482,7 @@ class Explorer:
             # Blacklist the current frontier so we don't loop back to it.
             if self._current_target_centroid is not None:
                 self._blacklisted.add(self._current_target_centroid)
-                print("[explorer] blacklisted frontier %s."
-                      % str(self._current_target_centroid))
+                print("[explorer] blacklisted frontier %s." % str(self._current_target_centroid))
             self._trigger_replan()            # discard path
             self.phase = self.REVERSE         # override -> backup first
             self._reverse_end_time = now + C.REVERSE_TIME

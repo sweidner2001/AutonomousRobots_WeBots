@@ -149,6 +149,30 @@ BLACKLIST_CLEAR = 8      # After this many successful frontier plans, clear the
                           # blacklist of unreachable frontiers so that map updates
                           # get a fresh chance to make them reachable.
 
+# --- Isolated frontier filtering (noise rejection) ---------------------------
+# A frontier cell almost entirely surrounded by ALREADY-OBSERVED cells is
+# usually a sensor artefact, not a real "more maze beyond here" signal --
+# see frontier.py: FrontierDetector.detect_cells().
+# 7x7 kreis hätte 33 1er
+# 5x5 kreis hätte 17 1er
+FRONTIER_ISOLATION_CIRCLE_DIA       = 5    # cells. Odd size, centred on the cell.
+FRONTIER_ISOLATION_MAX_UNKNOWN_CELLS = 3   # out of WINDOW*WINDOW=25 -- discard the
+                                          # frontier cell if this many (or more)
+                                          # neighbours are already known.
+
+# --- Frontier target hysteresis (reduces goal flip-flopping) ----------------
+# choose_target() is otherwise STATELESS: every PLAN cycle it picks purely by
+# cost, with no memory of what it picked last time.  A small map update
+# between cycles (a few more cells become known, shifting a path length by a
+# metre) can then make a DIFFERENT, only marginally cheaper cluster win by a
+# hair -- the robot commits to a frontier, immediately replans, and switches
+# again, back and forth.  The cluster closest to the PREVIOUSLY chosen target
+# gets a cost discount, so a competitor must be MEANINGFULLY better (not just
+# infinitesimally) before the robot abandons its current frontier.
+FRONTIER_STICKINESS_COUNT     = 3     # times. Number of consecutive plans the target must be chosen to be considered "sticky".
+FRONTIER_STICKINESS_MATCH_TOL_M = 0.08  # m. How close a NEW cluster's centroid must be
+                                          #    to the previous target to count as "the same one".
+
 # ===========================================================================
 # Path planner (A*)
 # ===========================================================================

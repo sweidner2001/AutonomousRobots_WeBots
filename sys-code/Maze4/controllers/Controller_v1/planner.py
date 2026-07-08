@@ -106,6 +106,12 @@ class PathPlanner:
         blocked = wall_blocked | hazard_blocked | object_blocked | camera_obs_blocked
         return blocked
     
+
+    @staticmethod
+    def get_raw_blocked_cells(grid):
+        blocked = grid.occ_mask() | grid.hazard_mask() | grid.any_object_mask() | grid.camera_obstacle_mask()
+        return blocked
+    
     
     # def get_block_cells_for_target_navigation(self, grid):
     #     """Blocked-cell mask used when navigating TO a tracked object.
@@ -481,7 +487,8 @@ class PathPlanner:
     # ---------------------------------------------------------------------- #
     # Frontier target selection
     # ---------------------------------------------------------------------- #
-    def choose_target(self, grid, clusters, robot_xy, blocked, unknown):
+    def choose_target(self, grid, clusters, robot_xy, blocked, unknown,
+                      prev_target_xy=None):
         """Pick the best reachable frontier cluster for the robot to drive to.
 
         Tries clusters from nearest to farthest (to minimise the number of
@@ -494,6 +501,15 @@ class PathPlanner:
             robot_xy  : (x, y) of the robot in world coordinates (m).
             blocked   : inflated obstacle mask (from build_cost_layers).
             unknown   : unobserved cell mask.
+            prev_target_xy : (x, y) world position of the PREVIOUSLY chosen
+                              target, or None.  Whichever candidate cluster
+                              is closest to it (within
+                              FRONTIER_STICKINESS_MATCH_TOL_M) gets a small
+                              cost discount -- see config.py
+                              FRONTIER_STICKINESS_BONUS_M for why: without
+                              this, tiny map updates between PLAN cycles can
+                              make the chosen frontier flip back and forth
+                              between two similarly-costed candidates.
 
         Returns:
             (path_rc, cluster) where:
@@ -502,6 +518,18 @@ class PathPlanner:
               cluster  : the chosen cluster dict, or None.
         """
         rx, ry = robot_xy
+
+        # Identify which candidate cluster (if any) is "the same one" as the
+        # previously chosen target, so we can apply the stickiness discount.
+        sticky_centroid = None
+        if prev_target_xy is not None and clusters:
+            def _dist_to_prev(cl):
+                gr, gc = cl["centroid"]
+                wx, wy = grid.grid_to_world(gc, gr)
+                return math.hypot(wx - prev_target_xy[0], wy - prev_target_xy[1])
+            closest = min(clusters, key=_dist_to_prev)
+            if _dist_to_prev(closest) <= C.FRONTIER_STICKINESS_MATCH_TOL_M:
+                sticky_centroid = closest["centroid"]
 
         # Convert robot world position to grid cell.
         sc0, sr0 = grid.world_to_grid(rx, ry)
@@ -518,6 +546,10 @@ class PathPlanner:
                 return None, None  # robot completely surrounded -> give up
             start_rc = alt
 
+
+
+
+
         # Sort clusters by straight-line distance (nearest first).
         def euclid(cl):
             gr, gc = cl["centroid"]
@@ -525,6 +557,7 @@ class PathPlanner:
             return math.hypot(wx - rx, wy - ry)
 
         clusters = sorted(clusters, key=euclid)
+
 
         best = None
         best_path = None
@@ -548,13 +581,19 @@ class PathPlanner:
             length_m = (len(path) - 1) * grid.res
             cost = length_m - C.INFO_GAIN_WEIGHT * math.sqrt(cl["size"])
 
+            # Stickiness discount: this candidate IS the previously chosen
+            # target, so it must be beaten by a real margin, not a hair
+            # (see this method's docstring / config.py FRONTIER_STICKINESS_*).
+            if sticky_centroid is not None and cl["centroid"] == sticky_centroid:
+                return path, cl  # take it immediately (no need to compare costs)
+
             if cost < best_cost and length_m > C.LIDAR_MIN_RANGE*2:
                 best_cost = cost
                 best      = cl
                 best_path = path
 
             # If the best path found so far is very short, take it immediately.
-            if best is not None and length_m < 1.0 and length_m > C.LIDAR_MIN_RANGE*2:
+            if best is not None and length_m < 1.0 and length_m > C.LIDAR_MIN_RANGE*2 and sticky_centroid is None:
                 break
 
         return best_path, best

@@ -149,7 +149,13 @@ class FrontierDetector:
             cells = self._flood(frontier_mask, visited, r0, c0, nrows, ncols)
             if len(cells) < C.FRONTIER_MIN_CELLS:
                 continue  # too small -- probably sensor noise; ignore
-            clusters.append(self._summarise(cells))
+            cluster = self._summarise(cells)
+
+            
+
+
+
+            clusters.append(cluster)
         return clusters
 
     # ---------------------------------------------------------------------- #
