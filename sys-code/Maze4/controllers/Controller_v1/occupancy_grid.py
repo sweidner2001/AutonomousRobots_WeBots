@@ -922,6 +922,11 @@ def flood_fill_4connected(seed_mask, allowed_mask, radius_cells):
         np.ndarray bool -- seed_mask plus every allowed cell reachable
         from it within radius_cells hops.
     """
+    # Normalise radius to a safe, non-negative integer hop count.
+    radius_cells = int(radius_cells)
+    if radius_cells < 0:
+        radius_cells = 0
+
     out = seed_mask & allowed_mask
     if radius_cells <= 0 or not out.any():
         return out

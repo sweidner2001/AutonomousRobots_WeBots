@@ -604,6 +604,7 @@ class GoToPoint:
     # ---------------------------------------------------------------------- #
     def _plan(self, pose, now):
         """Build the nav grid and run A* straight to the target."""
+        # print("REPLAN GOAL PATH")
         nav, _reachable, blocked = self.planner.build_nav_grid(
             self.grid, (pose[0], pose[1]), is_for_frontier=False
         )
@@ -1210,7 +1211,20 @@ class MazeExplorer:
         _act_search() doesn't switch straight back to `arrived_mission`'s
         GO_* sibling on its very next check (see mark_unreachable()'s
         docstring for the full "why").
+
+        RE-CENTRING THE TARGET EVERY GOTO_RETARGET_EVERY STEPS
+        ------------------------------------------------------------
+        `target_obj.world_xy` keeps being refreshed every camera frame
+        (TrackedObject.update_from_grid(), called from _perceive()) as the
+        colour log-odds centroid self-corrects -- so it can drift from
+        wherever it happened to be when GO_BLUE/GO_YELLOW started.  Every
+        C.GOTO_RETARGET_EVERY control steps we re-anchor GoToPoint on the
+        CURRENT estimate via goto.start(), which also forces a fresh A*
+        replan from the robot's current position to the updated target.
         """
+        if target_obj.world_xy is not None and self.step_i % C.GOTO_RETARGET_EVERY == 0:
+            self.goto.start(target_obj.world_xy)
+
         v, w = self.goto.update(self.pose, self.ranges, self.robot.bearings, self.now)
         self.robot.set_velocity(v, w)
 

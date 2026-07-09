@@ -125,6 +125,7 @@ class TrackedObject:
             now  : current simulation time (s).
         """
         centroid = grid.object_centroid(self.color_name)
+        # print(f"TrackedObject.update_centroid: {self.color_name} centroid = {centroid}")
         self.world_xy = centroid
         if centroid is None:
             # No cell is believed to hold this colour any more -> forget it.

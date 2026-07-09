@@ -390,6 +390,14 @@ CAMERA_SAMPLE_STRIDE = 6   # Only process every Nth pixel in each axis (subsampl
 # over the full grid twice per colour.
 OBJECT_CLEAN_EVERY = 5
 
+# During GO_BLUE/GO_YELLOW, re-centre GoToPoint's target on the tracked
+# object's CURRENT centroid (TrackedObject.world_xy) and force a fresh A*
+# replan every N control steps (see MazeExplorer._act_go_to()). The colour
+# log-odds centroid keeps refining as the camera gets more frames of the
+# object, so the position GO_BLUE/GO_YELLOW started with can drift from
+# where the object actually is -- this keeps the drive target current.
+GOTO_RETARGET_EVERY = 8
+
 # --- Hazard obstacle inflation ----------------------------------------------
 HAZARD_INFLATE_CELLS = INFLATE_RADIUS_CELLS  # Same safety margin as walls.
 
@@ -576,7 +584,7 @@ OBJECT_ISOLATED_BLOB_MAX_CELLS = 50   # ~0.08 m^2 at GRID_RESOLUTION=0.04
 # lidar is trusted over the camera here -- if the lidar later finds that
 # cell to be free instead, it silently drops out of the reconciled mask on
 # its own (no separate "undo" logic needed; see that method's docstring).
-OBJECT_WALL_MATCH_DISTANCE_M = 0.16   # m (~4 cells at GRID_RESOLUTION=0.04)
+OBJECT_WALL_MATCH_DISTANCE_M = 0.24   # m (~6 cells at GRID_RESOLUTION=0.04)
 
 
 
