@@ -949,6 +949,7 @@ class MazeExplorer:
         # CAMERA_EVERY: it only needs occ_mask()/object_mask() to be
         # reasonably current, not a fresh camera frame.
         if self.step_i % C.OBJECT_CLEAN_EVERY == 0:
+            print("[objects] cleaning colour log-odds maps.")
             self.grid.clean_object_log("blue")
             self.grid.clean_object_log("yellow")
 

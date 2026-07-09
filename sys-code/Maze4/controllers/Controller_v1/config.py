@@ -467,6 +467,11 @@ BLUE_HUE_MIN = 235   # degrees.  Blue hue band lower bound.
 BLUE_HUE_MAX = 245   # degrees.  Upper bound.
 BLUE_SAT_MIN = 0.70  # [0,1]. Minimum saturation (rules out grey/white).
 BLUE_VAL_MIN = 0.55  # [0,1]. Minimum brightness (rules out near-black shadow).
+# BLUE_HUE_MIN = 220   # degrees.  Blue hue band lower bound.
+# BLUE_HUE_MAX = 250   # degrees.  Upper bound.
+# BLUE_SAT_MIN = 0.35  # [0,1]. Minimum saturation (rules out grey/white).
+# BLUE_VAL_MIN = 0.20  # [0,1]. Minimum brightness (rules out near-black shadow).
+
 
 YELLOW_HUE_MIN = 50   # degrees.  Yellow hue band lower bound.
 YELLOW_HUE_MAX = 65   # degrees.  Upper bound.
@@ -561,6 +566,18 @@ OBJECT_CLUSTER_MIN_PIXELS = 3   # discards 1-2 px clusters
 # this many cells, or it's judged to be fused into the wall network rather
 # than a standalone object and gets wiped too.
 OBJECT_ISOLATED_BLOB_MAX_CELLS = 50   # ~0.08 m^2 at GRID_RESOLUTION=0.04
+
+
+
+
+# How close (in world metres) a lidar-detected wall cell must be to a raw
+# camera colour detection before we treat it as the SAME physical object
+# (see occupancy_grid.py: OccupancyGrid.reconciled_object_mask()).  The
+# lidar is trusted over the camera here -- if the lidar later finds that
+# cell to be free instead, it silently drops out of the reconciled mask on
+# its own (no separate "undo" logic needed; see that method's docstring).
+OBJECT_WALL_MATCH_DISTANCE_M = 0.08   # m (~4 cells at GRID_RESOLUTION=0.04)
+
 
 
 # ===========================================================================

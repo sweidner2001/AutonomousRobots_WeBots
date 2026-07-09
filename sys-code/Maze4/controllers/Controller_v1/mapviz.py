@@ -204,8 +204,8 @@ class MapViz:
         # object_mask() is kept clean of wall-fused/speckle false positives
         # by the periodic clean_object_log() call in the main loop (see
         # occupancy_grid.py: OccupancyGrid.clean_object_log()).
-        img[self.grid.object_mask("blue")]   = (0.15, 0.35, 0.95)
-        img[self.grid.object_mask("yellow")] = (0.95, 0.85, 0.10)
+        img[self.grid.reconciled_object_mask("blue")]   = (0.15, 0.35, 0.95)
+        img[self.grid.reconciled_object_mask("yellow")] = (0.95, 0.85, 0.10)
 
         return img
 

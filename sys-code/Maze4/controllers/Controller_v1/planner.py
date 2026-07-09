@@ -145,8 +145,11 @@ class PathPlanner:
                                               inflate_radius_cells=C.INFLATE_RADIUS_CELLS):
         hazard_blocked = self._inflate(grid.hazard_mask(),    hazard_inflate_cells)
 
-        blue_mask = grid.object_mask("blue")
-        yellow_mask = grid.object_mask("yellow")
+        # blue_mask = grid.object_mask("blue")
+        # yellow_mask = grid.object_mask("yellow")
+        
+        blue_mask = grid.reconciled_object_mask("blue")
+        yellow_mask = grid.reconciled_object_mask("yellow")
         object_area = blue_mask | yellow_mask
 
 
@@ -656,8 +659,11 @@ class PathPlanner:
         it off.  Used only to trace where a route to the target would run --
         the robot itself always drives the inflated, safe path.
         """
-        blue_mask   = grid.object_mask("blue")
-        yellow_mask = grid.object_mask("yellow")
+        # blue_mask   = grid.object_mask("blue")
+        # yellow_mask = grid.object_mask("yellow")
+        blue_mask   = grid.reconciled_object_mask("blue")
+        yellow_mask = grid.reconciled_object_mask("yellow")
+
         object_area = blue_mask | yellow_mask
 
         # Carve the object's own lidar-wall surface out of the wall map, so
