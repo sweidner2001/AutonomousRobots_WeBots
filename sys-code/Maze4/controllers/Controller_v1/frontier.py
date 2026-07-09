@@ -56,9 +56,7 @@ class FrontierDetector:
     """Stateless detector; all methods operate directly on an OccupancyGrid."""
 
     # 8-connected neighbourhood offsets: all cells touching a given cell.
-    _NEIGH8 = [(-1, -1), (-1, 0), (-1, 1),
-               (0,  -1),           (0,  1),
-               (1,  -1),  (1, 0),  (1,  1)]
+
 
     # ---------------------------------------------------------------------- #
     def detect_cells(self, nav, reachable):
@@ -118,7 +116,8 @@ class FrontierDetector:
         return bool(self.detect_cells(nav, reachable).any())
 
     # ---------------------------------------------------------------------- #
-    def cluster(self, frontier_mask):
+    @staticmethod
+    def cluster(frontier_mask):
         """Group frontier cells into 8-connected clusters using BFS.
 
         Two frontier cells belong to the same cluster if you can walk
@@ -146,20 +145,17 @@ class FrontierDetector:
         for r0, c0 in zip(rows, cols):
             if visited[r0, c0]:
                 continue  # already part of an earlier cluster
-            cells = self._flood(frontier_mask, visited, r0, c0, nrows, ncols)
+            cells = FrontierDetector._flood(frontier_mask, visited, r0, c0, nrows, ncols)
             if len(cells) < C.FRONTIER_MIN_CELLS:
                 continue  # too small -- probably sensor noise; ignore
-            cluster = self._summarise(cells)
-
-            
-
-
+            cluster = FrontierDetector._summarise(cells)
 
             clusters.append(cluster)
         return clusters
 
     # ---------------------------------------------------------------------- #
-    def _flood(self, mask, visited, r0, c0, nrows, ncols):
+    @staticmethod
+    def _flood(mask, visited, r0, c0, nrows, ncols):
         """Breadth-First Search to collect all 8-connected cells in one cluster.
 
         BFS uses a queue (deque).  We start with one seed cell, then
@@ -179,12 +175,15 @@ class FrontierDetector:
         cells = []
         queue = deque([(r0, c0)])
         visited[r0, c0] = True
+        _NEIGH8 = [(-1, -1), (-1, 0), (-1, 1),
+               (0,  -1),           (0,  1),
+               (1,  -1),  (1, 0),  (1,  1)]
 
         while queue:
             r, c = queue.popleft()
             cells.append((r, c))
             # Explore all 8 neighbours.
-            for dr, dc in self._NEIGH8:
+            for dr, dc in _NEIGH8:
                 rr, cc = r + dr, c + dc
                 if (0 <= rr < nrows and 0 <= cc < ncols
                         and mask[rr, cc] and not visited[rr, cc]):

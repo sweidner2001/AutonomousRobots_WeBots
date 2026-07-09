@@ -118,7 +118,7 @@ class PathPlanner:
 
     #     Unlike get_block_cells_for_frontier_exploration(), this EXCLUDES
     #     wall cells that are really the object's own surface (see
-    #     OccupancyGrid.reconciled_object_mask() for the full "why" -- in
+    #     OccupancyGrid.clean_object_log() for the full "why" -- in
     #     short: the lidar legitimately sees the object too, and if we
     #     didn't exclude those cells, the object's own surface would block
     #     its own destination, making it look unreachable even when the
@@ -126,7 +126,7 @@ class PathPlanner:
     #     """
     #     hazard_blocked = self._inflate(grid.hazard_mask(), C.HAZARD_INFLATE_CELLS)
 
-    #     object_area = grid.reconciled_object_mask("blue") | grid.reconciled_object_mask("yellow")
+    #     object_area = grid.object_mask("blue") | grid.object_mask("yellow")
     #     nav_occ_mask = grid.occ_mask().copy()
     #     nav_occ_mask[object_area] = False
 
@@ -145,8 +145,8 @@ class PathPlanner:
                                               inflate_radius_cells=C.INFLATE_RADIUS_CELLS):
         hazard_blocked = self._inflate(grid.hazard_mask(),    hazard_inflate_cells)
 
-        blue_mask = grid.reconciled_object_mask("blue")
-        yellow_mask = grid.reconciled_object_mask("yellow")
+        blue_mask = grid.object_mask("blue")
+        yellow_mask = grid.object_mask("yellow")
         object_area = blue_mask | yellow_mask
 
 
@@ -656,8 +656,8 @@ class PathPlanner:
         it off.  Used only to trace where a route to the target would run --
         the robot itself always drives the inflated, safe path.
         """
-        blue_mask   = grid.reconciled_object_mask("blue")
-        yellow_mask = grid.reconciled_object_mask("yellow")
+        blue_mask   = grid.object_mask("blue")
+        yellow_mask = grid.object_mask("yellow")
         object_area = blue_mask | yellow_mask
 
         # Carve the object's own lidar-wall surface out of the wall map, so

@@ -80,7 +80,7 @@ LIDAR_ANGLE_OFFSET = 0.0  # rad.  Extra rotation if the lidar is mounted
 # robot.py -- read_lidar() / _compute_lidar_angle_mask()), so every existing
 # consumer (map integration, frontier exploration, the safety reflex, ...)
 # automatically ignores them -- no other module needs to change.
-LIDAR_USE_FOV_DEG        = 270   # None = use the full sensor FOV. Degrees otherwise.
+LIDAR_USE_FOV_DEG        = 230   # None = use the full sensor FOV. Degrees otherwise.
 LIDAR_USE_FOV_CENTER_DEG = 0.0    # deg. Bearing at the centre of the window;
                                     # 0 = straight ahead, positive = left,
                                     # negative = right (same convention as bearings).
@@ -199,7 +199,7 @@ CORNER_MIN_SPEED_FACTOR = 0.2  # When the robot is turning a sharp corner, reduc
 # ===========================================================================
 
 CRUISE_SPEED   = 0.16   # m/s  Forward speed during normal driving.
-MAX_TURN_SPEED = 0.9    # rad/s  Maximum angular (turning) speed.
+MAX_TURN_SPEED = 0.8    # rad/s  Maximum angular (turning) speed.
 
 HEADING_KP     = 2.2    # Proportional gain on heading error for pure pursuit.
                           # Increase -> turns more aggressively toward waypoints.
@@ -272,6 +272,40 @@ VIZ_EVERY   = 6    # Refresh the matplotlib live view every N steps.
 SPIN_SEED_TURN = 6.5  # rad  Total rotation during the SPIN_SEED phase
                         # (≈ 1 full turn = 2π ≈ 6.28 rad, slightly more to
                         # ensure a complete 360° view before planning).
+
+# --- Lidar motion-distortion guard -------------------------------------------
+# The simulated RPLidar A2 is a REAL "rotating" sensor (type="rotating",
+# 12 Hz -- one full 360 deg sweep takes ~83 ms of simulated time).  The
+# WHOLE 400-point range array returned by one read_lidar() call is folded
+# into the map as if every point were captured INSTANTANEOUSLY at the
+# CURRENT heading -- but if the robot itself is rotating while the physical
+# sweep happens, that is not true: points from one end of the array are up
+# to one full sweep period "stale" relative to the current heading.  While
+# driving straight this barely matters (heading is nearly constant across
+# 83 ms), but while TURNING it smears/mis-places ray endpoints -- at a wall
+# 2 m away, even a ~2 deg heading error during the sweep shifts the computed
+# hit position by several centimetres (multiple grid cells), enough for the
+# FREE-marking sweep of a mis-angled ray to pass straight through an
+# already-mapped wall cell and erase it back to "free".
+#
+# Fix: never integrate a lidar scan while the robot's angular velocity
+# (measured between control steps, from the IMU-backed heading) is above
+# this threshold -- the scan is simply skipped for that control step (pose
+# and mission logic continue normally; the map just isn't updated from
+# unreliable data).  SPIN_SEED_SPEED below is tuned to stay comfortably
+# under this so SPIN_SEED can still integrate scans WHILE it deliberately
+# rotates (that is the whole point of that phase).
+LIDAR_MAX_ANGULAR_VEL_FOR_MAP = 0.35   # rad/s
+
+# SPIN_SEED's own rotation speed -- deliberately SLOWER than a generic turn
+# (MAX_TURN_SPEED) so its per-sweep heading drift stays small enough that
+# its scans pass the guard above and are trustworthy.  At this speed, drift
+# over one 83 ms lidar sweep is ~1 deg (a few cm at 2 m range) instead of
+# the ~2.3 deg (~8 cm, multiple grid cells) the old 0.6*MAX_TURN_SPEED rate
+# caused.  SPIN_SEED_TURN is unchanged, so the seeding turn simply takes a
+# bit longer in sim-time -- a good trade for a map that doesn't get holes
+# punched in it during the very first thing the robot ever does.
+SPIN_SEED_SPEED = 0.40   # rad/s
 
 # ===========================================================================
 # RGB-D floor hazard detection (green "do not drive here" tiles)
@@ -349,6 +383,12 @@ CAMERA_EVERY        = 4   # Run floor-hazard detection every N control steps
                             # (this is a moderately expensive per-pixel operation).
 CAMERA_SAMPLE_STRIDE = 6   # Only process every Nth pixel in each axis (subsampling
                             # keeps the per-frame cost small: 640x480 / 6 / 6 ≈ 8500 px).
+
+# Run OccupancyGrid.clean_object_log() every N control steps (see that
+# method's docstring). Cheap relative to CAMERA_EVERY's per-pixel cost, but
+# still not worth doing every single step -- connected-component labelling
+# over the full grid twice per colour.
+OBJECT_CLEAN_EVERY = 5
 
 # --- Hazard obstacle inflation ----------------------------------------------
 HAZARD_INFLATE_CELLS = INFLATE_RADIUS_CELLS  # Same safety margin as walls.
@@ -433,19 +473,22 @@ YELLOW_HUE_MAX = 65   # degrees.  Upper bound.
 YELLOW_SAT_MIN = 0.70 # [0,1].
 YELLOW_VAL_MIN = 0.55 # [0,1].
 
-# --- Near-field fallback: LIDAR fills in where the depth camera goes blind --
+# --- No-depth fallback: LIDAR fills in where the depth camera has no reading -
 #
 # THE PROBLEM
 # ------------
-# The Astra depth camera has a MINIMUM range (~0.6 m, see robot.py --
-# camera_depth_min_range).  Closer than that, every pixel reads inf and is
-# dropped by the `valid` filter -- BEFORE the colour test even runs.  When
-# the robot gets within a few centimetres of the tracked object, the OBJECT
-# ITSELF is what falls inside this dead zone: its own pixels vanish, and the
-# only pixels that still have valid depth are the ones peeking AROUND it
-# (usually the wall behind).  Those get stamped as hits instead -- the
-# object's own true position contributes NOTHING, and stray colour bleed at
-# the object's silhouette can tag the wall behind it as the object instead.
+# The Astra depth camera reads inf for a pixel whenever it has no valid
+# measurement there -- either the surface is CLOSER than its minimum range
+# (~0.6 m, see robot.py -- camera_depth_min_range), or it's simply a bad IR
+# return (shiny/dark coloured plastic is a common offender, even at normal
+# range).  Those pixels are dropped by the `valid` filter -- BEFORE the
+# colour test even runs.  When the robot is near the tracked object, the
+# OBJECT ITSELF is often exactly what produces these inf pixels: its own
+# pixels vanish, and the only pixels that still have valid depth are the
+# ones peeking AROUND it (usually the wall behind).  Those get stamped as
+# hits instead -- the object's own true position contributes NOTHING, and
+# stray colour bleed at the object's silhouette can tag the wall behind it
+# as the object instead.
 #
 # THE FIX
 # --------
@@ -498,13 +541,27 @@ P_OBJ_THRESH =  0.60  # a cell with p >= this is treated as holding the object.
 # P_OBJ_THRESH =  0.60  # a cell with p >= this is treated as holding the object.
 
 
-# How close (in world metres) a lidar-detected wall cell must be to a raw
-# camera colour detection before we treat it as the SAME physical object
-# (see occupancy_grid.py: OccupancyGrid.reconciled_object_mask()).  The
-# lidar is trusted over the camera here -- if the lidar later finds that
-# cell to be free instead, it silently drops out of the reconciled mask on
-# its own (no separate "undo" logic needed; see that method's docstring).
-OBJECT_WALL_MATCH_DISTANCE_M = 0.08   # m (~4 cells at GRID_RESOLUTION=0.04)
+# --- Cluster sanity checks for OccupancyGrid.clean_object_log() -------------
+#
+# See that method's docstring for the full story. In short: a real tracked
+# object is a small, isolated blob; a false colour detection smeared onto a
+# wall (RGB-D registration/parallax error at close range) is either a tiny
+# speckle or ends up fused into the maze's much larger connected wall
+# network. Two independent checks catch each failure mode, and cells that
+# fail either one have their accumulated log-odds evidence permanently
+# wiped -- see clean_object_log()'s docstring for why that counts as
+# "forever" even though no separate sticky blacklist is kept.
+
+# Step 1 -- denoise: an 8-connected camera-detection cluster with this many
+# pixels or fewer is treated as speckle noise and dropped outright.
+OBJECT_CLUSTER_MIN_PIXELS = 3   # discards 1-2 px clusters
+
+# Step 2 -- isolation check: the connected component of occ_mask() (the
+# lidar wall map) that a surviving cluster touches must be no larger than
+# this many cells, or it's judged to be fused into the wall network rather
+# than a standalone object and gets wiped too.
+OBJECT_ISOLATED_BLOB_MAX_CELLS = 50   # ~0.08 m^2 at GRID_RESOLUTION=0.04
+
 
 # ===========================================================================
 # Mission flags

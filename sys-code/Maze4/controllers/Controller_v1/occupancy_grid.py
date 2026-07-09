@@ -63,6 +63,7 @@ The grid origin (col=0, row=0) is at world (GRID_ORIGIN_X, GRID_ORIGIN_Y).
 import math
 
 import numpy as np
+from scipy import ndimage
 
 import Maze4.controllers.Controller_v1.config as C
 
@@ -213,7 +214,10 @@ class OccupancyGrid:
         estimate self-corrects: when a false-positive cell decays back below
         threshold it stops contributing, and the centroid shifts back onto
         the real object -- unlike a running average, which can never forget a
-        point it once averaged in.
+        point it once averaged in.  object_mask() itself is kept clean of
+        wall-fused/speckle false positives by the periodic
+        clean_object_log() call in the main loop (see that method's
+        docstring) -- this method doesn't need to know about that.
         """
         mask = self.object_mask(color)
         rows, cols = np.nonzero(mask)
@@ -234,76 +238,97 @@ class OccupancyGrid:
         return self.object_mask("blue") | self.object_mask("yellow")
 
     # ---------------------------------------------------------------------- #
-    # Reconciling the lidar wall map with camera-detected objects
+    # Periodically cleaning false colour detections out of the object log
     # ---------------------------------------------------------------------- #
-    def reconciled_object_mask(self, color, max_distance_m=None):
-        """Build a corrected object mask by reconciling the camera's raw
-        colour detections with the lidar's wall map, TRUSTING THE LIDAR
-        whenever the two disagree.
+    def clean_object_log(self, color):
+        """Permanently erase parts of `color`'s log-odds map that don't look
+        like a real, standalone object.
+
+        Called periodically from the main loop (every C.OBJECT_CLEAN_EVERY
+        control steps, NOT on every read -- see explorer.py) -- unlike a
+        live/stateless filter recomputed on every call, this edits
+        self.object_log[color] directly, so object_mask(color) itself is
+        clean everywhere it's read afterwards and no caller (object_centroid,
+        the planner, mapviz, ...) needs to know this cleanup exists.
 
         THE PROBLEM THIS SOLVES
         --------------------------
-        The RGB-D camera and the lidar are two independent sensors.
-        Sometimes the lidar sees a wall, and the depth camera -- due to
-        its own small geometric/registration error -- reports a coloured
-        object as sitting slightly BEHIND that wall.  Since the lidar is
-        the more accurate sensor here, we treat any wall cell that is
-        close enough to a raw camera detection as being the SAME physical
-        surface as the object, not a separate, coincidentally-placed wall.
+        The RGB-D camera and the lidar are two independent sensors.  When
+        the robot is close to the tracked object, a small registration/
+        parallax error can make a few pixels of a WALL read as the
+        object's colour instead of the object itself (see
+        colored_objects.py's no-depth fallback for the related camera-side
+        fix).  These false positives come in two recognisable shapes:
+          - tiny 1-2 pixel speckles from a single noisy frame, or
+          - a patch that is really part of the wall, which -- unlike a
+            free-standing object -- is fused into the lidar's much larger
+            connected network of wall cells.
+        A real object is neither: it is a solid handful of camera pixels,
+        and physically it sits apart from the wall network.
 
-        HOW IT WORKS
-        -------------
-        1. Start from object_mask(color) -- the current camera-only
-           detections (a live thresholded view of object_log, never
-           modified by this method).
-        2. Grow that mask outward by max_distance_m, 4-CONNECTED steps
-           only (up/down/left/right, no diagonals) via
-           grow_mask_4connected() -- a small, BOUNDED region.  This must
-           stay bounded: maze walls are typically one single connected
-           network, so an unbounded flood fill from the object would
-           eventually reach and swallow the entire wall structure.
-        3. Intersect that grown region with occ_mask() (the CURRENT,
-           live lidar wall map).  Any wall cell inside the small grown
-           region is assumed to be the object's own surface.
-        4. Return the union of the raw detections and those matched wall
-           cells.
+        WHY WIPING LOG-ODDS COUNTS AS "FOREVER" WITH NO BLACKLIST
+        -----------------------------------------------------------------
+        Resetting a cell's log-odds to 0 ("unknown") does not, on its own,
+        stop some future frame from marking it `color` again -- there is
+        no separate sticky per-cell blacklist, on purpose (every other map
+        layer in this class self-corrects the same way; hazard_mask() is
+        the one deliberate exception, and this isn't meant to become a
+        second one). What makes the deletion effectively permanent is that
+        this same check re-runs every C.OBJECT_CLEAN_EVERY steps: a
+        cluster that is genuinely a wall reading will fail the isolation
+        check again next cycle, and the one after that, for as long as the
+        underlying wall geometry hasn't changed -- so it is never given
+        more than C.OBJECT_CLEAN_EVERY steps to look like the object
+        before being wiped again.
 
-        WHY A CELL THAT LIDAR LATER PROVES FREE REMOVES ITSELF
-        ------------------------------------------------------------
-        This method is STATELESS: it recomputes the result FRESH from
-        occ_mask() on every call, instead of caching or storing the
-        merged result anywhere.  occ_mask() is itself a live view of the
-        log-odds grid, and the ordinary Bayesian update in
-        integrate_scan() already handles "the lidar changed its mind":
-        repeated FREE observations lower a cell's log-odds until it drops
-        back below P_OCC_THRESH, at which point occ_mask() stops
-        including it.  So if the lidar later sweeps that cell and finds
-        it free after all, it simply disappears from THIS method's
-        result on the very next call too -- "trusting the sensor and
-        deleting it" falls out automatically, with no extra bookkeeping.
-        The camera's own object_log is untouched either way.
+        THE TWO CHECKS
+        ---------------
+          1. Denoise: label object_mask(color) into 8-connected clusters
+             and wipe any cluster with C.OBJECT_CLUSTER_MIN_PIXELS pixels
+             or fewer -- single-frame camera noise.
+          2. Isolation: label occ_mask() (the lidar wall map) into
+             8-connected components.  Any surviving cluster that touches a
+             wall component larger than C.OBJECT_ISOLATED_BLOB_MAX_CELLS
+             cells is fused into the wall network rather than being a
+             small, separate object, and gets wiped too.
 
         Args:
-            color          : "blue" or "yellow".
-            max_distance_m : how close (world metres) a wall cell must be
-                              to a raw detection to count as the same
-                              object.  Defaults to
-                              config.OBJECT_WALL_MATCH_DISTANCE_M.
-
-        Returns:
-            np.ndarray bool -- raw camera detections UNION any nearby
-            lidar-confirmed wall cells.
+            color : "blue" or "yellow".
         """
-        if max_distance_m is None:
-            max_distance_m = C.OBJECT_WALL_MATCH_DISTANCE_M
-        radius_cells = max(1, int(round(max_distance_m / self.res)))
+        raw = self.object_mask(color)
+        if not raw.any():
+            return
 
-        raw          = self.object_mask(color)
-        # return raw
-        grown        = grow_mask_4connected(raw, radius_cells)
-        matched_wall = grown & self.occ_mask()
+        structure = np.ones((3, 3), dtype=bool)   # 8-connected
 
-        return raw | matched_wall
+        # Step 1: denoise.
+        cluster_labels, n_clusters = ndimage.label(raw, structure=structure)
+        if n_clusters == 0:
+            return
+        cluster_sizes = ndimage.sum(raw, cluster_labels, index=np.arange(1, n_clusters + 1))
+        small     = np.nonzero(cluster_sizes <= C.OBJECT_CLUSTER_MIN_PIXELS)[0] + 1
+        survivors = np.nonzero(cluster_sizes >  C.OBJECT_CLUSTER_MIN_PIXELS)[0] + 1
+        to_delete = np.isin(cluster_labels, small)
+
+        # Step 2: isolation check, only for clusters that survived step 1.
+        if survivors.size:
+            blocked = self.occ_mask()
+            blocked_labels, n_blocked = ndimage.label(blocked, structure=structure)
+            if n_blocked:
+                blocked_sizes = ndimage.sum(
+                    blocked, blocked_labels, index=np.arange(1, n_blocked + 1))
+                for lbl in survivors:
+                    cluster_mask = cluster_labels == lbl
+                    touched = np.unique(blocked_labels[cluster_mask])
+                    touched = touched[touched != 0]
+                    if touched.size == 0:
+                        continue   # touches no lidar wall -- a standalone object
+                    blob_size = blocked_sizes[touched - 1].sum()
+                    if blob_size > C.OBJECT_ISOLATED_BLOB_MAX_CELLS:
+                        to_delete |= cluster_mask
+
+        if to_delete.any():
+            self.object_log[color][to_delete] = 0.0
 
     # ---------------------------------------------------------------------- #
     # Camera-based hazard / object marking
@@ -706,48 +731,6 @@ class OccupancyGrid:
     def save(self, npy_path):
         """Save the raw log-odds array to a NumPy binary file."""
         np.save(npy_path, self.log)
-
-
-# ============================================================================
-# 4-connected bounded mask growth
-# ============================================================================
-def grow_mask_4connected(mask, radius_cells):
-    """Grow a boolean mask outward by `radius_cells`, 4-connected steps
-    (up/down/left/right only -- no diagonals).
-
-    Used by OccupancyGrid.reconciled_object_mask() to find wall cells
-    that are really a tracked object's own surface (see that method's
-    docstring for the full story).
-
-    WHY A SMALL, FIXED RADIUS -- NOT A FLOOD FILL
-    --------------------------------------------------
-    Deliberately a bounded number of steps, not an open-ended flood fill
-    that follows connectivity through an arbitrary region.  Maze walls
-    are typically ONE single connected network -- an unbounded flood
-    fill starting from a small seed (e.g. a detected coloured object
-    sitting against a wall) would eventually reach and swallow the
-    ENTIRE wall structure.  Growing by a small fixed radius instead only
-    reaches cells that are genuinely close to the seed, regardless of
-    what they happen to be connected to.
-
-    Args:
-        mask         : boolean array to grow.
-        radius_cells : how many cells to grow, in each of the 4 directions.
-
-    Returns:
-        np.ndarray bool -- the grown mask (same shape as input).
-    """
-    if radius_cells <= 0 or not mask.any():
-        return mask.copy()
-    out = mask.copy()
-    for _ in range(radius_cells):
-        grown = out.copy()
-        grown[:-1, :] |= out[1:,  :]
-        grown[1:,  :] |= out[:-1, :]
-        grown[:, :-1] |= out[:,  1:]
-        grown[:,  1:] |= out[:, :-1]
-        out = grown
-    return out
 
 
 # ============================================================================

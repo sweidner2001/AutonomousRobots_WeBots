@@ -267,13 +267,12 @@ class Explorer:
         if self._spin_accum >= C.SPIN_SEED_TURN:
             print("[explorer] spin complete (%.2f rad) -> PLAN" % self._spin_accum)
             self.phase = self.PLAN
-
-
-
             return 0.0, 0.0   # stop for one step while transitioning
 
-        # Keep spinning counterclockwise at 60% of max turn speed.
-        return 0.0, C.MAX_TURN_SPEED * 0.6
+        # Keep spinning counterclockwise at SPIN_SEED_SPEED -- deliberately
+        # slow (see config.py) so the lidar's own ~83 ms sweep period stays
+        # trustworthy while we rely on it to seed the whole map.
+        return 0.0, C.SPIN_SEED_SPEED
 
     # ---------------------------------------------------------------------- #
     # PLAN phase
@@ -843,9 +842,14 @@ class MazeExplorer:
           - Read simulation time.
           - Update odometry pose (x, y, theta) from encoders + IMU.
           - Read the latest lidar scan.
-          - Every MAP_EVERY steps: fuse the scan into the occupancy grid.
+          - Every MAP_EVERY steps, IF the robot isn't rotating too fast for
+            the scan to be trustworthy: fuse it into the occupancy grid.
         """
         self.step_i += 1
+
+        prev_theta = self.pose[2]
+        prev_now   = self.now
+
         self.now     = self.robot.get_time()
         self.pose    = self.odom.update(
             self.robot.read_encoders(), self.robot.read_yaw()
@@ -853,7 +857,32 @@ class MazeExplorer:
         self.previous_ranges = self.ranges
         self.ranges  = self.robot.read_lidar()
 
-        # Fuse the lidar scan into the map (not every single step to save CPU).
+        # Angular velocity since the last step, from the IMU-backed heading
+        # (wrapped correctly across the +/-pi seam) -- used below to gate
+        # lidar map integration.  See config.py LIDAR_MAX_ANGULAR_VEL_FOR_MAP
+        # for why: the simulated lidar is a real ROTATING sensor (~83 ms per
+        # sweep), and its whole range array is folded into the map as if
+        # captured instantaneously -- while turning fast, that assumption is
+        # wrong enough to smear/erase already-mapped walls.
+        # dt = self.now - prev_now
+        # if dt > 0.0:
+        #     dtheta = math.atan2(
+        #         math.sin(self.pose[2] - prev_theta),
+        #         math.cos(self.pose[2] - prev_theta),
+        #     )
+        #     angular_vel = abs(dtheta) / dt
+        # else:
+        #     angular_vel = 0.0
+
+        # # Fuse the lidar scan into the map (not every single step to save CPU),
+        # # but only while turning slowly enough for the scan to be trustworthy.
+        # if self.step_i % C.MAP_EVERY == 0:
+        #     if angular_vel <= C.LIDAR_MAX_ANGULAR_VEL_FOR_MAP:
+        #         self.grid.integrate_scan(
+        #             self.pose[0], self.pose[1], self.pose[2],
+        #             self.ranges, self.robot.bearings
+        #         )
+
         if self.step_i % C.MAP_EVERY == 0:
             self.grid.integrate_scan(
                 self.pose[0], self.pose[1], self.pose[2],
@@ -912,6 +941,16 @@ class MazeExplorer:
                 self.pose[0], self.pose[1], self.pose[2],
                 obstacle_ranges, obstacle_bearings
             )
+
+        # Periodically scrub false colour detections (camera noise, or a
+        # wall misread as the object at close range) permanently out of the
+        # colour log-odds maps -- see occupancy_grid.py:
+        # OccupancyGrid.clean_object_log(). Its own cadence, independent of
+        # CAMERA_EVERY: it only needs occ_mask()/object_mask() to be
+        # reasonably current, not a fresh camera frame.
+        if self.step_i % C.OBJECT_CLEAN_EVERY == 0:
+            self.grid.clean_object_log("blue")
+            self.grid.clean_object_log("yellow")
 
         # Update "reached" every step -- cheap distance check, no reason to
         # wait for the next camera frame.
