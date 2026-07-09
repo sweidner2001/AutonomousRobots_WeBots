@@ -299,6 +299,7 @@ class OccupancyGrid:
         radius_cells = max(1, int(round(max_distance_m / self.res)))
 
         raw          = self.object_mask(color)
+        # return raw
         grown        = grow_mask_4connected(raw, radius_cells)
         matched_wall = grown & self.occ_mask()
 

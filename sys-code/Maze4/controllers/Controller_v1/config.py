@@ -423,15 +423,15 @@ CAMERA_OBSTACLE_DEPTH_PAD_M = 0.20   # m
 # HSV colour bands differ, and objects are NOT restricted to the floor
 # plane (they can appear anywhere in the frame).
 
-BLUE_HUE_MIN = 220   # degrees.  Blue hue band lower bound.
-BLUE_HUE_MAX = 250   # degrees.  Upper bound.
-BLUE_SAT_MIN = 0.35  # [0,1]. Minimum saturation (rules out grey/white).
-BLUE_VAL_MIN = 0.20  # [0,1]. Minimum brightness (rules out near-black shadow).
+BLUE_HUE_MIN = 235   # degrees.  Blue hue band lower bound.
+BLUE_HUE_MAX = 245   # degrees.  Upper bound.
+BLUE_SAT_MIN = 0.70  # [0,1]. Minimum saturation (rules out grey/white).
+BLUE_VAL_MIN = 0.55  # [0,1]. Minimum brightness (rules out near-black shadow).
 
-YELLOW_HUE_MIN = 45   # degrees.  Yellow hue band lower bound.
-YELLOW_HUE_MAX = 69   # degrees.  Upper bound.
-YELLOW_SAT_MIN = 0.35 # [0,1].
-YELLOW_VAL_MIN = 0.20 # [0,1].
+YELLOW_HUE_MIN = 50   # degrees.  Yellow hue band lower bound.
+YELLOW_HUE_MAX = 65   # degrees.  Upper bound.
+YELLOW_SAT_MIN = 0.70 # [0,1].
+YELLOW_VAL_MIN = 0.55 # [0,1].
 
 # --- Near-field fallback: LIDAR fills in where the depth camera goes blind --
 #
@@ -489,9 +489,14 @@ OBJECT_UNREACHABLE_COOLDOWN_S = 12.0   # s
 # These are kept SEPARATE from the lidar's L_FREE/L_OCC because colour
 # detection is noisier and you will usually want to tune it on its own.
 L_OBJ_OCC    =  1.00  # log-odds added   for a cell that matched the colour.
-L_OBJ_FREE   = -0.50  # log-odds added   for a visible cell that did NOT match.
+L_OBJ_FREE   = -0.80  # log-odds added   for a visible cell that did NOT match.
 L_OBJ_CLAMP  =  8.0   # clamp object log-odds to +/- this (numerical safety).
 P_OBJ_THRESH =  0.60  # a cell with p >= this is treated as holding the object.
+# L_OBJ_OCC    =  1.00  # log-odds added   for a cell that matched the colour.
+# L_OBJ_FREE   = -0.50  # log-odds added   for a visible cell that did NOT match.
+# L_OBJ_CLAMP  =  8.0   # clamp object log-odds to +/- this (numerical safety).
+# P_OBJ_THRESH =  0.60  # a cell with p >= this is treated as holding the object.
+
 
 # How close (in world metres) a lidar-detected wall cell must be to a raw
 # camera colour detection before we treat it as the SAME physical object
@@ -499,7 +504,7 @@ P_OBJ_THRESH =  0.60  # a cell with p >= this is treated as holding the object.
 # lidar is trusted over the camera here -- if the lidar later finds that
 # cell to be free instead, it silently drops out of the reconciled mask on
 # its own (no separate "undo" logic needed; see that method's docstring).
-OBJECT_WALL_MATCH_DISTANCE_M = 0.16   # m (~4 cells at GRID_RESOLUTION=0.04)
+OBJECT_WALL_MATCH_DISTANCE_M = 0.08   # m (~4 cells at GRID_RESOLUTION=0.04)
 
 # ===========================================================================
 # Mission flags
