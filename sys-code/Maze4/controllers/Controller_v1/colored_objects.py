@@ -69,7 +69,7 @@ instead of only ever seeing the wall behind it.
 """
 
 import math
-
+from Maze4.controllers.Controller_v1.occupancy_grid import OccupancyGrid
 import numpy as np
 
 import Maze4.controllers.Controller_v1.config as C
@@ -100,7 +100,7 @@ class TrackedObject:
         self.last_seen_time  = None  # simulation time (s) of the most recent detection
 
     # ------------------------------------------------------------------ #
-    def update_from_grid(self, grid, now):
+    def update_from_grid(self, grid:OccupancyGrid, now):
         """Refresh this object's position estimate from the occupancy grid's
         self-correcting object mask.
 

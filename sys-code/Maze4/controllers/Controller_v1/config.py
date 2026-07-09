@@ -576,7 +576,7 @@ OBJECT_ISOLATED_BLOB_MAX_CELLS = 50   # ~0.08 m^2 at GRID_RESOLUTION=0.04
 # lidar is trusted over the camera here -- if the lidar later finds that
 # cell to be free instead, it silently drops out of the reconciled mask on
 # its own (no separate "undo" logic needed; see that method's docstring).
-OBJECT_WALL_MATCH_DISTANCE_M = 0.08   # m (~4 cells at GRID_RESOLUTION=0.04)
+OBJECT_WALL_MATCH_DISTANCE_M = 0.16   # m (~4 cells at GRID_RESOLUTION=0.04)
 
 
 

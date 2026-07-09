@@ -1215,13 +1215,11 @@ class MazeExplorer:
         self.robot.set_velocity(v, w)
 
         if self.goto.arrived:
-            print("[mission] arrived at the %s object -> %s"
-                  % (target_obj.color_name, arrived_mission))
+            print("[mission] arrived at the %s object -> %s" % (target_obj.color_name, arrived_mission))
             self.mission = arrived_mission
 
         elif self.goto.failed:
-            print("[mission] could not reach the %s object after all -> back to %s"
-                  % (target_obj.color_name, fallback_mission))
+            print("[mission] could not reach the %s object after all -> back to %s" % (target_obj.color_name, fallback_mission))
             target_obj.mark_unreachable()
             self.explorer.resume()
             self.mission = fallback_mission

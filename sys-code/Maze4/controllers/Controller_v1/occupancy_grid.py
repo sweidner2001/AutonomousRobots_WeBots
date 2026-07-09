@@ -219,7 +219,8 @@ class OccupancyGrid:
         clean_object_log() call in the main loop (see that method's
         docstring) -- this method doesn't need to know about that.
         """
-        mask = self.object_mask(color)
+        # mask = self.object_mask(color)
+        mask = self.reconciled_object_mask(color)
         rows, cols = np.nonzero(mask)
         if rows.size == 0:
             return None
@@ -342,30 +343,37 @@ class OccupancyGrid:
 
         THE PROBLEM THIS SOLVES
         --------------------------
-        The RGB-D camera and the lidar are two independent sensors.
-        Sometimes the lidar sees a wall, and the depth camera -- due to
-        its own small geometric/registration error -- reports a coloured
-        object as sitting slightly BEHIND that wall.  Since the lidar is
-        the more accurate sensor here, we treat any wall cell that is
-        close enough to a raw camera detection as being the SAME physical
-        surface as the object, not a separate, coincidentally-placed wall.
+        The RGB-D camera and the lidar are two independent sensors, and the
+        camera's colour test frequently only recognises PART of a real
+        object -- lighting, viewing angle, or the hue thresholds miss some
+        of its surface.  The lidar, meanwhile, sees the object's full
+        physical footprint as ordinary occupied cells, indistinguishable
+        from a wall.  We want to recover that full footprint for the
+        colour that WAS recognised, by pulling in the occ_mask() cells
+        that are the same physical object -- without pulling in a nearby
+        but physically SEPARATE wall.
 
         HOW IT WORKS
         -------------
         1. Start from object_mask(color) -- the current camera-only
            detections (a live thresholded view of object_log, never
            modified by this method).
-        2. Grow that mask outward by max_distance_m, 4-CONNECTED steps
-           only (up/down/left/right, no diagonals) via
-           grow_mask_4connected() -- a small, BOUNDED region.  This must
-           stay bounded: maze walls are typically one single connected
-           network, so an unbounded flood fill from the object would
-           eventually reach and swallow the entire wall structure.
-        3. Intersect that grown region with occ_mask() (the CURRENT,
-           live lidar wall map).  Any wall cell inside the small grown
-           region is assumed to be the object's own surface.
-        4. Return the union of the raw detections and those matched wall
-           cells.
+        2. Flood fill outward from there by at most max_distance_m,
+           4-CONNECTED steps (up/down/left/right, no diagonals), via
+           flood_fill_4connected() -- but each step may only enter a cell
+           that is itself part of the raw detection or occ_mask() (walls).
+           Growth can therefore only follow an UNBROKEN chain of occupied
+           cells: a wall that happens to sit within max_distance_m of the
+           seed but has a gap of FREE space in between is never reached,
+           no matter how large max_distance_m is.  This is the fix over
+           the old plain bounded dilation, which grew by raw distance and
+           could jump straight over such a gap.
+        3. Intersect the reachable region with occ_mask() to get exactly
+           the wall/object-surface cells that are genuinely connected to
+           the detection (the raw cells themselves are already colour
+           evidence and don't need this filter).
+        4. Return the union of the raw detections and those connected
+           wall cells.
 
         WHY A CELL THAT LIDAR LATER PROVES FREE REMOVES ITSELF
         ------------------------------------------------------------
@@ -376,31 +384,33 @@ class OccupancyGrid:
         integrate_scan() already handles "the lidar changed its mind":
         repeated FREE observations lower a cell's log-odds until it drops
         back below P_OCC_THRESH, at which point occ_mask() stops
-        including it.  So if the lidar later sweeps that cell and finds
-        it free after all, it simply disappears from THIS method's
-        result on the very next call too -- "trusting the sensor and
-        deleting it" falls out automatically, with no extra bookkeeping.
-        The camera's own object_log is untouched either way.
+        including it -- which also breaks the connected chain leading to
+        it, so it drops out of this method's result on the very next call
+        too, with no extra bookkeeping.  The camera's own object_log is
+        untouched either way.
 
         Args:
             color          : "blue" or "yellow".
-            max_distance_m : how close (world metres) a wall cell must be
-                              to a raw detection to count as the same
-                              object.  Defaults to
-                              config.OBJECT_WALL_MATCH_DISTANCE_M.
+            max_distance_m : how far (world metres), following connected
+                              occ_mask() cells, a wall cell may be from a
+                              raw detection to count as the same object.
+                              Defaults to config.OBJECT_WALL_MATCH_DISTANCE_M.
 
         Returns:
-            np.ndarray bool -- raw camera detections UNION any nearby
-            lidar-confirmed wall cells.
+            np.ndarray bool -- raw camera detections UNION any nearby,
+            connected lidar-confirmed wall cells.
         """
+        raw = self.object_mask(color)
+        if not raw.any():
+            return raw
+
         if max_distance_m is None:
             max_distance_m = C.OBJECT_WALL_MATCH_DISTANCE_M
         radius_cells = max(1, int(round(max_distance_m / self.res)))
 
-        raw          = self.object_mask(color)
-        # return raw
-        grown        = grow_mask_4connected(raw, radius_cells)
-        matched_wall = grown & self.occ_mask()
+        occ          = self.occ_mask()
+        reachable    = flood_fill_4connected(raw, raw | occ, radius_cells)
+        matched_wall = reachable & occ
 
         return raw | matched_wall
 
@@ -865,42 +875,67 @@ def _bresenham(x0, y0, x1, y1):
 
 
 # ============================================================================
-# 4-connected bounded mask growth
+# 4-connected bounded flood fill
 # ============================================================================
-def grow_mask_4connected(mask, radius_cells):
-    """Grow a boolean mask outward by `radius_cells`, 4-connected steps
-    (up/down/left/right only -- no diagonals).
+def flood_fill_4connected(seed_mask, allowed_mask, radius_cells):
+    """Grow `seed_mask` outward by at most `radius_cells` 4-connected hops
+    (up/down/left/right only -- no diagonals), stepping ONLY through cells
+    where `allowed_mask` is True.
 
-    Used by OccupancyGrid.reconciled_object_mask() to find wall cells
-    that are really a tracked object's own surface (see that method's
-    docstring for the full story).
+    Used by OccupancyGrid.reconciled_object_mask() to recover a tracked
+    object's full occ_mask() footprint even when the camera only coloured
+    part of it, without also reaching a nearby but physically SEPARATE
+    wall (see that method's docstring for the full story).
 
-    WHY A SMALL, FIXED RADIUS -- NOT A FLOOD FILL
-    --------------------------------------------------
-    Deliberately a bounded number of steps, not an open-ended flood fill
-    that follows connectivity through an arbitrary region.  Maze walls
-    are typically ONE single connected network -- an unbounded flood
-    fill starting from a small seed (e.g. a detected coloured object
-    sitting against a wall) would eventually reach and swallow the
-    ENTIRE wall structure.  Growing by a small fixed radius instead only
-    reaches cells that are genuinely close to the seed, regardless of
-    what they happen to be connected to.
+    WHY GATE EVERY STEP ON allowed_mask -- NOT PLAIN DILATION
+    -------------------------------------------------------------
+    A plain bounded dilation (grow outward by a fixed radius regardless of
+    what the intervening cells are) can "jump" across a gap of free space:
+    if a wall happens to sit within `radius_cells` of the seed but is NOT
+    physically touching it, dilation still reaches it once the radius is
+    large enough, and the caller ends up believing free-standing wall
+    cells are part of the object. Gating every hop on allowed_mask closes
+    that hole: growth can only follow an UNBROKEN chain of allowed cells,
+    so a genuinely disconnected wall across even one cell of free space
+    can never be reached, no matter how large radius_cells is set. This
+    is what makes it safe to use a generous radius (to recover the whole
+    object) without it ever bleeding into unrelated nearby walls.
+
+    WHY STILL BOUNDED, NOT AN OPEN-ENDED FLOOD FILL
+    -----------------------------------------------------
+    Maze walls are typically ONE single connected network, and (unlike a
+    disconnected wall) the object's own surface IS genuinely connected to
+    it wherever the object sits flush against a wall. An unbounded flood
+    fill from the seed would then follow that connection and eventually
+    swallow the entire wall structure. The radius cap keeps growth limited
+    to "genuinely close to the seed", same intent as the old fixed-radius
+    dilation this replaces -- just connectivity-aware now.
 
     Args:
-        mask         : boolean array to grow.
-        radius_cells : how many cells to grow, in each of the 4 directions.
+        seed_mask    : boolean array, cells to start growing from.
+        allowed_mask : boolean array, cells growth may pass through
+                        (typically seed_mask itself unioned with occ_mask()
+                        so the seed can always act as its own bridge).
+        radius_cells : maximum number of 4-connected hops from the seed.
 
     Returns:
-        np.ndarray bool -- the grown mask (same shape as input).
+        np.ndarray bool -- seed_mask plus every allowed cell reachable
+        from it within radius_cells hops.
     """
-    if radius_cells <= 0 or not mask.any():
-        return mask.copy()
-    out = mask.copy()
+    out = seed_mask & allowed_mask
+    if radius_cells <= 0 or not out.any():
+        return out
+    frontier = out.copy()
     for _ in range(radius_cells):
-        grown = out.copy()
-        grown[:-1, :] |= out[1:,  :]
-        grown[1:,  :] |= out[:-1, :]
-        grown[:, :-1] |= out[:,  1:]
-        grown[:,  1:] |= out[:, :-1]
-        out = grown
+        grown = np.zeros_like(frontier)
+        grown[:-1, :] |= frontier[1:,  :]
+        grown[1:,  :] |= frontier[:-1, :]
+        grown[:, :-1] |= frontier[:,  1:]
+        grown[:,  1:] |= frontier[:, :-1]
+        grown &= allowed_mask
+        new_cells = grown & ~out
+        if not new_cells.any():
+            break
+        out |= new_cells
+        frontier = new_cells
     return out
