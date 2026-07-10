@@ -627,8 +627,51 @@ class GoToPoint:
             )
             print("[goto] direct path to target blocked by safety margin; 'falling back' plan is applied.")
             if path_rc is not None:
-                print("[goto] direct path sealed by safety margin; "
-                      "approaching object as close as safely possible.")
+                print("[goto] direct path sealed by safety margin; approaching object as close as safely possible.")
+
+        # DEADLOCK CHECK: plan_path_near_blocked_target() always parks at the
+        # edge of the FULL (default) inflation margin -- its Step 4 always
+        # replans with the un-reduced margin, regardless of how far Step 1's
+        # raw-route search had to shrink it just to find A route at all. If
+        # that edge point is where the robot is ALREADY standing, the "path"
+        # makes zero progress: DRIVE will finish it instantly, replan, get
+        # the exact same path back, and loop forever without ever advancing
+        # -- a deadlock the fail-count/failed mechanism below never catches,
+        # because plan_path_to() keeps successfully returning a (useless)
+        # path. Detect it here and retry once with every inflation margin
+        # shaved down by one cell, which is often enough to open up the
+        # narrow gap the full margin sealed.
+        if path_rc is not None:
+            last_r, last_c = path_rc[-1]
+            last_xy = self.grid.grid_to_world(last_c, last_r)
+            if math.hypot(pose[0] - last_xy[0], pose[1] - last_xy[1]) < C.WAYPOINT_TOL:
+                shrunk_blocked = self.planner.get_block_cells_for_target_navigation(
+                    self.grid,
+                    inflate_camera_obstacle_cells=C.INFLATE_CAMERA_OBSTACLE_CELLS - 1
+                )
+                shrunk_path = self.planner.plan_path_to(
+                    self.grid, shrunk_blocked, self.grid.unknown_mask(),
+                    (pose[0], pose[1]), self.target_xy
+                )
+                shrunk_progress = False
+                if shrunk_path is not None:
+                    r2, c2 = shrunk_path[-1]
+                    xy2 = self.grid.grid_to_world(c2, r2)
+                    shrunk_progress = math.hypot(
+                        pose[0] - xy2[0], pose[1] - xy2[1]) >= C.WAYPOINT_TOL
+
+                if shrunk_progress:
+                    print("[goto] deadlocked at the inflation margin -- "
+                          "a 1-cell-smaller margin frees a step forward.")
+                    path_rc  = shrunk_path
+                    self._blocked_cache = shrunk_blocked
+                else:
+                    print("[goto] deadlocked even with a 1-cell-smaller "
+                          "inflation margin -- treating as a failed plan.")
+                    path_rc = None
+
+
+
 
         if path_rc is None:
             self._fail_count += 1
@@ -950,7 +993,7 @@ class MazeExplorer:
         # CAMERA_EVERY: it only needs occ_mask()/object_mask() to be
         # reasonably current, not a fresh camera frame.
         if self.step_i % C.OBJECT_CLEAN_EVERY == 0:
-            print("[objects] cleaning colour log-odds maps.")
+            # print("[objects] cleaning colour log-odds maps.")
             self.grid.clean_object_log("blue")
             self.grid.clean_object_log("yellow")
 

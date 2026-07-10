@@ -142,7 +142,8 @@ class PathPlanner:
     def get_block_cells_for_target_navigation(self, grid, 
                                               hazard_inflate_cells=C.HAZARD_INFLATE_CELLS, 
                                               object_inflate_cells=C.OBJECT_INFLATE_CELLS, 
-                                              inflate_radius_cells=C.INFLATE_RADIUS_CELLS):
+                                              inflate_wall_cells=C.INFLATE_RADIUS_CELLS,
+                                              inflate_camera_obstacle_cells=C.INFLATE_CAMERA_OBSTACLE_CELLS):
         hazard_blocked = self._inflate(grid.hazard_mask(),    hazard_inflate_cells)
 
         # blue_mask = grid.object_mask("blue")
@@ -157,12 +158,12 @@ class PathPlanner:
         occ_mask_delete_lidar_scan_to_target = grid.occ_mask() & object_mask_for_delete_frontiers
         nav_to_target_occ_mask = grid.occ_mask().copy()
         nav_to_target_occ_mask[occ_mask_delete_lidar_scan_to_target] = False
-        wall_blocked  = self._inflate(nav_to_target_occ_mask, inflate_radius_cells)
+        wall_blocked  = self._inflate(nav_to_target_occ_mask, inflate_wall_cells)
         wall_blocked[occ_mask_delete_lidar_scan_to_target] = False
 
         # Low, lidar-blind obstacles (camera-only map) block the target route
         # too -- same as walls (see occupancy_grid.integrate_camera_obstacle).
-        camera_obs_blocked = self._inflate(grid.camera_obstacle_mask(), inflate_radius_cells)
+        camera_obs_blocked = self._inflate(grid.camera_obstacle_mask(), inflate_camera_obstacle_cells)
 
         blocked = wall_blocked | hazard_blocked | camera_obs_blocked
         return blocked
@@ -712,9 +713,11 @@ class PathPlanner:
         # --- Step 1: raw physical route to the object (no inflation) --------
         
         for i in range(min(C.HAZARD_INFLATE_CELLS, C.OBJECT_INFLATE_CELLS, C.INFLATE_RADIUS_CELLS)):
-            raw_blocked = self.get_block_cells_for_target_navigation(grid, C.HAZARD_INFLATE_CELLS - i, 
-                                                                 C.OBJECT_INFLATE_CELLS - i, 
-                                                                 C.INFLATE_RADIUS_CELLS - i)
+            raw_blocked = self.get_block_cells_for_target_navigation(grid, 
+                                                                     hazard_inflate_cells = C.HAZARD_INFLATE_CELLS - i, 
+                                                                     object_inflate_cells = C.OBJECT_INFLATE_CELLS - i,
+                                                                     inflate_wall_cells = C.INFLATE_RADIUS_CELLS - i,
+                                                                     inflate_camera_obstacle_cells = C.INFLATE_CAMERA_OBSTACLE_CELLS - i)
 
 
             # raw_blocked = self._raw_blocked_for_target(grid)

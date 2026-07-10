@@ -396,11 +396,11 @@ OBJECT_CLEAN_EVERY = 5
 # log-odds centroid keeps refining as the camera gets more frames of the
 # object, so the position GO_BLUE/GO_YELLOW started with can drift from
 # where the object actually is -- this keeps the drive target current.
-GOTO_RETARGET_EVERY = 8
+GOTO_RETARGET_EVERY = 15
 
 # --- Hazard obstacle inflation ----------------------------------------------
 HAZARD_INFLATE_CELLS = INFLATE_RADIUS_CELLS  # Same safety margin as walls.
-
+INFLATE_CAMERA_OBSTACLE_CELLS = INFLATE_RADIUS_CELLS  
 # ===========================================================================
 # RGB-D depth-only obstacle detection (catches obstacles the LIDAR misses)
 # ===========================================================================
