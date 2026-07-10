@@ -804,22 +804,9 @@ class OccupancyGrid:
                 # padding to add either.
                 continue
 
-            # Mark a small LATERAL spread of cells around the hit, not just
-            # the single endpoint pixel -- see config.py
-            # CAMERA_OBSTACLE_LATERAL_POINTS for why: one sampled column
-            # says nothing about how far the surface extends to either
-            # side. Spread perpendicular to THIS ray's own bearing, at the
-            # same depth, same "small span beats a single point" reasoning
-            # as MazeExplorer._mark_tip_over_obstacle().
-            perp_x, perp_y = -sin_a[i], cos_a[i]
-            half_span = (C.CAMERA_OBSTACLE_LATERAL_POINTS - 1) / 2.0
-            for k in range(C.CAMERA_OBSTACLE_LATERAL_POINTS):
-                offset = (k - half_span) * C.CAMERA_OBSTACLE_LATERAL_SPACING_M
-                lc, lr = self.world_to_grid(
-                    ex + offset * perp_x, ey + offset * perp_y)
-                if self.in_bounds(lc, lr):
-                    occ_rows.append(lr)
-                    occ_cols.append(lc)
+            if self.in_bounds(c1, r1):
+                occ_rows.append(r1)
+                occ_cols.append(c1)
 
             if pad_m <= 0.0:
                 continue

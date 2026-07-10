@@ -960,8 +960,9 @@ class MazeExplorer:
         self.previous_ranges = self.ranges
         self.ranges  = self.robot.read_lidar()
 
-        self._check_tip_over()
-
+        tipped = self._check_tip_over()
+        if tipped:
+            return  # don't integrate lidar while tipped -- it will be garbage
         # Angular velocity since the last step, from the IMU-backed heading
         # (wrapped correctly across the +/-pi seam) -- used below to gate
         # lidar map integration.  See config.py LIDAR_MAX_ANGULAR_VEL_FOR_MAP
