@@ -731,14 +731,17 @@ class OccupancyGrid:
         Places the sensor origin at the camera's mount offset (the same
         CAMERA_FORWARD_M / CAMERA_LATERAL_M constants floor_hazard.py and
         colored_objects.py use).  FREE cells along each ray are marked
-        per-ray (redundant free evidence is harmless).  OCCUPIED cells (the
-        hit itself, plus the occlusion-padding stretch behind it if
-        pad_m > 0) are collected across ALL rays and applied ONCE PER CELL
-        at the end -- see _add_logodds()'s docstring for why: many candidate
-        points from ONE frame can converge on the SAME cell at close range,
-        and applying L_OCC once per point (instead of once per cell) can
-        slam a cell to the clamp ceiling in a single frame, making it
-        effectively impossible to erase later.
+        per-ray (redundant free evidence is harmless).  OCCUPIED cells --
+        a small LATERAL spread of C.CAMERA_OBSTACLE_LATERAL_POINTS cells
+        around each hit (see config.py -- one sampled column says nothing
+        about how far the surface extends sideways), plus the occlusion-
+        padding stretch behind it if pad_m > 0 -- are collected across ALL
+        rays and applied ONCE PER CELL at the end -- see _add_logodds()'s
+        docstring for why: many candidate points from ONE frame can
+        converge on the SAME cell at close range, and applying L_OCC once
+        per point (instead of once per cell) can slam a cell to the clamp
+        ceiling in a single frame, making it effectively impossible to
+        erase later.
 
         REJECTING "FLYING" CANDIDATES BEHIND ALREADY-CONFIRMED SOLID CELLS
         --------------------------------------------------------------------
@@ -801,9 +804,22 @@ class OccupancyGrid:
                 # padding to add either.
                 continue
 
-            if self.in_bounds(c1, r1):
-                occ_rows.append(r1)
-                occ_cols.append(c1)
+            # Mark a small LATERAL spread of cells around the hit, not just
+            # the single endpoint pixel -- see config.py
+            # CAMERA_OBSTACLE_LATERAL_POINTS for why: one sampled column
+            # says nothing about how far the surface extends to either
+            # side. Spread perpendicular to THIS ray's own bearing, at the
+            # same depth, same "small span beats a single point" reasoning
+            # as MazeExplorer._mark_tip_over_obstacle().
+            perp_x, perp_y = -sin_a[i], cos_a[i]
+            half_span = (C.CAMERA_OBSTACLE_LATERAL_POINTS - 1) / 2.0
+            for k in range(C.CAMERA_OBSTACLE_LATERAL_POINTS):
+                offset = (k - half_span) * C.CAMERA_OBSTACLE_LATERAL_SPACING_M
+                lc, lr = self.world_to_grid(
+                    ex + offset * perp_x, ey + offset * perp_y)
+                if self.in_bounds(lc, lr):
+                    occ_rows.append(lr)
+                    occ_cols.append(lc)
 
             if pad_m <= 0.0:
                 continue

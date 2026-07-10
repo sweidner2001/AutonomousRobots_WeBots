@@ -499,6 +499,16 @@ ROBOT_CLEARANCE_HEIGHT_M = 0.22   # m
 # CAMERA_OBSTACLE_DEPTH_PAD_M = 0.24   # m
 CAMERA_OBSTACLE_DEPTH_PAD_M = 0.20   # m
 
+# One sampled column only tells us an obstacle exists AT that exact
+# bearing -- it says nothing about how far it extends to either side, and
+# CAMERA_SAMPLE_STRIDE means neighbouring bearings often aren't
+# independently tested at all that frame. So each accepted hit is marked
+# as a small LATERAL spread of cells (perpendicular to that ray's own
+# bearing, at the same depth) instead of a single pixel-wide sliver --
+# same reasoning as MazeExplorer._mark_tip_over_obstacle()'s wall segment.
+CAMERA_OBSTACLE_LATERAL_POINTS     = 3            # cells marked per hit
+CAMERA_OBSTACLE_LATERAL_SPACING_M  = GRID_RESOLUTION  # m between them
+
 # ===========================================================================
 # Coloured target objects (blue / yellow) -- detection + tracking
 # ===========================================================================
