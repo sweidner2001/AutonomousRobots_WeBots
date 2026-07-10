@@ -198,7 +198,13 @@ class MapViz:
 
         # Override low, lidar-blind obstacles (camera-only map) with orange,
         # so they are distinguishable from lidar walls (black) while debugging.
-        img[self.grid.camera_obstacle_mask()] = (1.0, 0.55, 0.0)
+        # Cells that are ALSO a confirmed lidar wall are left black, not
+        # orange: camera_obstacle_mask() legitimately overlaps occ_mask()
+        # whenever a detected surface is genuinely flush against a real
+        # wall, and painting those orange looked exactly like a separate
+        # "flying" detection floating on top of the wall, even though the
+        # data underneath was correct all along.
+        img[self.grid.camera_obstacle_mask() & ~wall] = (1.0, 0.55, 0.0)
 
         # Override camera-detected tracked-object cells with their colour.
         # object_mask() is kept clean of wall-fused/speckle false positives

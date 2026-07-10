@@ -464,7 +464,7 @@ DEPTH_OBSTACLE_FLAT_TOL_M = 0.05   # m
 # subtends roughly 20-80 px, whereas taller things (walls) subtend more and
 # are already handled by the lidar; noise subtends less.  Tune per world.
 DEPTH_OBSTACLE_MIN_RUN_PX = 3
-DEPTH_OBSTACLE_MAX_RUN_PX = 25
+DEPTH_OBSTACLE_MAX_RUN_PX = 60
 
 # "Flying" obstacles: a hanging surface (e.g. a beam spanning the maze) is
 # only a real obstacle if the robot cannot fit UNDERNEATH it.  For every
