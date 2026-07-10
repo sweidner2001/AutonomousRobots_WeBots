@@ -57,6 +57,18 @@ back-project its bottom pixel (the surface's lowest visible point) and
 compute its height above the ground; if that height clears
 ROBOT_CLEARANCE_HEIGHT_M, the run is skipped.
 
+WHY ALSO EXCLUDE THE TRACKED BLUE/YELLOW OBJECT?
+------------------------------------------------------
+The near-field depth blind zone right at the tracked object's own edge is
+exactly where a bad/blended depth reading produces a spurious "flying
+wall" (see occupancy_grid.py for the geometric line-of-sight checks that
+catch most of that). Colour is a second, independent signal that doesn't
+depend on depth at all: if a candidate's registered RGB pixel is blue or
+yellow, it IS (or is immediately touching) the tracked object, which
+colored_objects.py already tracks properly. detect() drops those
+candidates so this colour-blind detector never duplicates or interferes
+with that dedicated pipeline.
+
 OUTPUT FORMAT: WHY (range, bearing), NOT WORLD (x, y)?
 ------------------------------------------------------------
 floor_hazard.py and colored_objects.py both return world (x, y) points
@@ -77,6 +89,7 @@ import numpy as np
 import Maze4.controllers.Controller_v1.config as C
 from Maze4.controllers.Controller_v1.camera_geometry import (
     CameraIntrinsics, sample_pixel_grid, tilt_correct,
+    register_and_sample_rgb, rgb_to_hsv,
 )
 
 
@@ -102,7 +115,7 @@ class DepthObstacleDetector:
         self._us, self._vs = sample_pixel_grid(self.intr, C.CAMERA_SAMPLE_STRIDE)
 
     # ------------------------------------------------------------------ #
-    def detect(self, depth_img):
+    def detect(self, depth_img, rgb_img=None):
         """Return (ranges, bearings) for every detected lidar-blind obstacle
         point this frame, in the robot's own frame (same convention as
         robot.bearings: range in metres, bearing in radians, positive =
@@ -111,6 +124,11 @@ class DepthObstacleDetector:
         Args:
             depth_img : (H, W) float32 array (metres) from
                          Robot.read_camera_depth().
+            rgb_img   : optional (H, W, 3) uint8 array from
+                         Robot.read_camera_rgb().  When given, a candidate
+                         whose registered RGB pixel matches the tracked
+                         blue/yellow HSV bands is dropped -- see the
+                         "SAFETY CHECK" note below.
 
         Returns:
             (ranges, bearings) -- two 1-D NumPy float arrays (possibly
@@ -175,6 +193,36 @@ class DepthObstacleDetector:
         can_drive_under   = bottom_height > C.ROBOT_CLEARANCE_HEIGHT_M
 
         keep = not_floor & ~can_drive_under
+
+        # ---- Step 3c: SAFETY CHECK -- exclude the tracked blue/yellow -----------
+        # object's OWN surface. A run's bad/blended depth right at the near-field
+        # blind zone around the tracked object is exactly what produces a
+        # "flying wall" there (see occupancy_grid.py's line-of-sight checks for
+        # the geometric side of this fix) -- but the object's true colour is
+        # independent of its depth reading, so it is a reliable extra signal:
+        # if a candidate's registered RGB pixel is blue or yellow, it is (or is
+        # immediately touching) the tracked object, which colored_objects.py
+        # already tracks properly -- including its own near-field lidar
+        # fallback and periodic clean_object_log() cleanup. There is no need
+        # for this generic, colour-blind detector to ALSO claim it, and every
+        # reason not to: doing so is how a bad depth reading right at the
+        # object turns into a spurious camera_obstacle_log entry.
+        if rgb_img is not None and np.any(keep):
+            r, g, b = register_and_sample_rgb(
+                right_cam, down_cam, depth_f, self.intr,
+                C.CAMERA_RGB_DEPTH_BASELINE_M, rgb_img,
+            )
+            hue, sat, val = rgb_to_hsv(r, g, b)
+            is_blue = (
+                (hue >= C.BLUE_HUE_MIN) & (hue <= C.BLUE_HUE_MAX)
+                & (sat >= C.BLUE_SAT_MIN) & (val >= C.BLUE_VAL_MIN)
+            )
+            is_yellow = (
+                (hue >= C.YELLOW_HUE_MIN) & (hue <= C.YELLOW_HUE_MAX)
+                & (sat >= C.YELLOW_SAT_MIN) & (val >= C.YELLOW_VAL_MIN)
+            )
+            keep = keep & ~is_blue & ~is_yellow
+
         if not np.any(keep):
             return empty
 
