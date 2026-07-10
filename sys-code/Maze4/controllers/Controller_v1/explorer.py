@@ -206,7 +206,8 @@ class Explorer:
     # ---------------------------------------------------------------------- #
     # Main dispatch
     # ---------------------------------------------------------------------- #
-    def update(self, pose, ranges, bearings, now, scan_similarity=1.0, previous_speed_command=0.0):
+    def update(self, pose, ranges, bearings, now, scan_similarity=1.0,
+               previous_speed_command=0.0, tipped=False):
         """Return (v, w) wheel command for this control step.
 
         Called once per simulation step by MazeExplorer._act().
@@ -216,6 +217,10 @@ class Explorer:
             ranges   : lidar range array from Robot.
             bearings : per-ray bearing array (precomputed by Robot).
             now      : current simulation time (seconds).
+            tipped   : True if MazeExplorer._check_tip_over() currently
+                        detects the robot tipped over -- treated as an
+                        immediate stuck signal during DRIVE (see
+                        _drive()'s docstring).
 
         Returns:
             (v, w) -- forward speed (m/s) and angular speed (rad/s).
@@ -225,7 +230,8 @@ class Explorer:
         if self.phase == self.PLAN:
             return self._plan(pose, now)
         if self.phase == self.DRIVE:
-            return self._drive(pose, ranges, bearings, now, scan_similarity, previous_speed_command)
+            return self._drive(pose, ranges, bearings, now, scan_similarity,
+                                previous_speed_command, tipped)
         if self.phase == self.REVERSE:
             return self._reverse(pose, now)
         return 0.0, 0.0   # DONE: stand still
@@ -418,16 +424,37 @@ class Explorer:
     # ---------------------------------------------------------------------- #
     # DRIVE phase
     # ---------------------------------------------------------------------- #
-    def _drive(self, pose, ranges, bearings, now, scan_similarity=0.0, previous_speed_command=0.0):
+    def _drive(self, pose, ranges, bearings, now, scan_similarity=0.0,
+               previous_speed_command=0.0, tipped=False):
         """Follow the current path and detect when replanning is needed.
 
         Delegates actual steering to pilot.compute().
-        Checks three conditions that trigger a replan:
+        Checks conditions that trigger a replan:
           a) Path is fully traversed (Pilot signals done).
           b) Time since last plan >= PLAN_PERIOD (force periodic replan).
           c) Current path is blocked by newly-discovered walls.
           d) Robot has not moved enough for too long (stuck).
+          e) The robot is currently tipped over (see MazeExplorer.
+             _check_tip_over()) -- an immediate, more reliable stuck
+             signal than (d): if the front wheels are off the ground,
+             waiting out STUCK_TIME just spins them uselessly instead of
+             backing away right away.
         """
+        # (e) takes priority over everything else -- there's no point
+        # asking the pilot to steer toward a path while the chassis is
+        # tipped, and no reason to wait for the slower distance/time-based
+        # check below when the IMU already confirms we're stuck.
+        if tipped:
+            print("[explorer] tipped over at (%.2f, %.2f) -> immediate backup."
+                  % (pose[0], pose[1]))
+            if self._current_target_centroid is not None:
+                self._blacklisted.add(self._current_target_centroid)
+                print("[explorer] blacklisted frontier %s." % str(self._current_target_centroid))
+            self._trigger_replan()
+            self.phase = self.REVERSE
+            self._reverse_end_time = now + C.REVERSE_TIME
+            return -C.CRUISE_SPEED, 0.0
+
         # Ask the pilot for the next (v, w) command.
         stuck = False
         v, w, done = self.pilot.compute(pose, ranges, bearings)
@@ -589,12 +616,19 @@ class GoToPoint:
         self.pilot.clear()
 
     # ---------------------------------------------------------------------- #
-    def update(self, pose, ranges, bearings, now):
-        """Return (v, w) wheel command for this control step."""
+    def update(self, pose, ranges, bearings, now, tipped=False):
+        """Return (v, w) wheel command for this control step.
+
+        Args:
+            tipped : True if MazeExplorer._check_tip_over() currently
+                      detects the robot tipped over -- treated as an
+                      immediate stuck signal during DRIVE (see _drive()'s
+                      docstring).
+        """
         if self.phase == self.PLAN:
             return self._plan(pose, now)
         if self.phase == self.DRIVE:
-            return self._drive(pose, ranges, bearings, now)
+            return self._drive(pose, ranges, bearings, now, tipped)
         if self.phase == self.REVERSE:
             return self._reverse(pose, now)
         return 0.0, 0.0
@@ -695,8 +729,21 @@ class GoToPoint:
     # ---------------------------------------------------------------------- #
     # DRIVE phase
     # ---------------------------------------------------------------------- #
-    def _drive(self, pose, ranges, bearings, now):
-        """Follow the path; replan/stuck-handling mirrors Explorer._drive()."""
+    def _drive(self, pose, ranges, bearings, now, tipped=False):
+        """Follow the path; replan/stuck-handling mirrors Explorer._drive().
+
+        `tipped` (see MazeExplorer._check_tip_over()) takes priority over
+        everything else, same reasoning as Explorer._drive(): it's a more
+        immediate and reliable stuck signal than waiting out STUCK_TIME.
+        """
+        if tipped:
+            print("[goto] tipped over at (%.2f, %.2f) -> immediate backup."
+                  % (pose[0], pose[1]))
+            self._trigger_replan()
+            self.phase = self.REVERSE
+            self._reverse_end_time = now + C.REVERSE_TIME
+            return -C.CRUISE_SPEED, 0.0
+
         v, w, done = self.pilot.compute(pose, ranges, bearings)
 
         dist_to_target = math.hypot(
@@ -1212,7 +1259,7 @@ class MazeExplorer:
 
     def _check_tip_over(self):
         """Detect the robot physically tipped over and, if so, stamp a
-        camera obstacle at its current position.
+        wall segment ahead of it into the map.
 
         WHY THIS IS NEEDED
         --------------------
@@ -1224,15 +1271,29 @@ class MazeExplorer:
         map says anything is there. The IMU's roll/pitch (robot.py
         read_roll_pitch()) stay near 0 while the chassis sits flat, so a
         reading beyond C.TIP_OVER_TILT_RAD is a reliable "stuck on
-        something the map doesn't know about" signal. When that fires, the
-        robot's OWN current position IS the evidence, so we mark it
-        directly (see OccupancyGrid.mark_camera_obstacle_world()) rather
-        than needing a real camera depth hit -- the same inflation and
-        blocked-cell handling every other obstacle gets then keeps future
-        plans from routing back into this spot (the planner already
-        searches outward for a free start cell if the robot's own cell
-        ends up blocked, so this is safe even while the robot is standing
-        right on top of the mark).
+        something the map doesn't know about" signal.
+
+        HOW THE MAP GETS UPDATED -- SEE _mark_tip_over_obstacle()
+        ------------------------------------------------------------------
+        The robot's own position IS the evidence, so there's no need for a
+        real camera depth hit -- but a single point (the old behaviour)
+        only inflates to a small disk, and we genuinely don't know how
+        WIDE whatever it hit really is. _mark_tip_over_obstacle() stamps a
+        whole segment ahead of the robot instead, so the replan that
+        follows (see below) has a wall it can't just angle around.
+
+        THIS IS ALSO NOW A STUCK SIGNAL, NOT JUST A MAP UPDATE
+        ------------------------------------------------------------------
+        Previously this method only updated the map and otherwise let the
+        active FSM keep driving normally -- so the robot could sit there
+        tipped, front wheels spinning uselessly, until the SEPARATE
+        distance/time-based stuck check (C.STUCK_TIME) eventually noticed
+        no progress was being made. Tipping IS already a "physically stuck"
+        signal, and a more immediate and reliable one than waiting for
+        STUCK_TIME to elapse -- so the return value here is threaded into
+        Explorer.update()/GoToPoint.update() as `tipped` (see _act_*() call
+        sites), and their _drive() methods treat it as an instant trigger
+        for the SAME backup + replan machinery C.STUCK_TIME normally drives.
 
         Only prints on the tipped/not-tipped TRANSITION so the console
         isn't spammed every step while stuck; the mark itself is cheap
@@ -1244,12 +1305,34 @@ class MazeExplorer:
         if tipped:
             if not self._was_tipped:
                 print("[robot] tipped over (roll=%.2f, pitch=%.2f rad) -- "
-                      "marking (%.2f, %.2f) as a camera obstacle."
+                      "marking a wall segment ahead of (%.2f, %.2f)."
                       % (roll, pitch, self.pose[0], self.pose[1]))
-            self.grid.mark_camera_obstacle_world(
-                np.array([self.pose[0]]), np.array([self.pose[1]]))
+            self._mark_tip_over_obstacle()
 
         self._was_tipped = tipped
+        return tipped
+
+    def _mark_tip_over_obstacle(self):
+        """Stamp a wall SEGMENT into camera_obstacle_log, spanning
+        C.TIP_OVER_OBSTACLE_HALF_WIDTH_M either side of the robot's current
+        heading, C.TIP_OVER_OBSTACLE_AHEAD_M in front of it -- see
+        _check_tip_over()'s docstring for why a segment instead of a single
+        point.
+        """
+        x, y, theta = self.pose
+        ahead_x = x + C.TIP_OVER_OBSTACLE_AHEAD_M * math.cos(theta)
+        ahead_y = y + C.TIP_OVER_OBSTACLE_AHEAD_M * math.sin(theta)
+        perp_x, perp_y = -math.sin(theta), math.cos(theta)
+
+        n_steps = max(1, int(round(
+            2 * C.TIP_OVER_OBSTACLE_HALF_WIDTH_M / C.TIP_OVER_OBSTACLE_POINT_SPACING_M)))
+        offsets = np.linspace(
+            -C.TIP_OVER_OBSTACLE_HALF_WIDTH_M, C.TIP_OVER_OBSTACLE_HALF_WIDTH_M,
+            n_steps + 1)
+
+        xs = ahead_x + offsets * perp_x
+        ys = ahead_y + offsets * perp_y
+        self.grid.mark_camera_obstacle_world(xs, ys)
 
     # ---------------------------------------------------------------------- #
     # Mission phase handlers
@@ -1259,6 +1342,7 @@ class MazeExplorer:
         v, w = self.explorer.update(self.pose, self.ranges, self.robot.bearings, self.now,
                                     # scan_similarity=self.get_scan_similarity_to_previous(),
                                     # previous_speed_command=self.robot.previous_v
+                                    tipped=self._was_tipped,
                                     )
         self.robot.set_velocity(v, w)
         self._refresh_object_reachability()
@@ -1278,7 +1362,8 @@ class MazeExplorer:
         object, this is not necessarily final -- see the ONE-SHOT RECHECK
         below -- before really moving on to `exhausted_mission`.
         """
-        v, w = self.explorer.update(self.pose, self.ranges, self.robot.bearings, self.now)
+        v, w = self.explorer.update(self.pose, self.ranges, self.robot.bearings, self.now,
+                                    tipped=self._was_tipped)
         self.robot.set_velocity(v, w)
         self._refresh_object_reachability()
 
@@ -1346,7 +1431,8 @@ class MazeExplorer:
         wall pixel there gets a fresh chance to decay away (ordinary
         log-odds correction) before Explorer re-plans with the FULL margin.
         """
-        v, w = self.goto.update(self.pose, self.ranges, self.robot.bearings, self.now)
+        v, w = self.goto.update(self.pose, self.ranges, self.robot.bearings, self.now,
+                                tipped=self._was_tipped)
         self.robot.set_velocity(v, w)
 
         if self.goto.arrived or self.goto.failed:
@@ -1386,7 +1472,8 @@ class MazeExplorer:
         if target_obj.world_xy is not None and self.step_i % C.GOTO_RETARGET_EVERY == 0:
             self.goto.start(target_obj.world_xy)
 
-        v, w = self.goto.update(self.pose, self.ranges, self.robot.bearings, self.now)
+        v, w = self.goto.update(self.pose, self.ranges, self.robot.bearings, self.now,
+                                tipped=self._was_tipped)
         self.robot.set_velocity(v, w)
 
         if self.goto.arrived:

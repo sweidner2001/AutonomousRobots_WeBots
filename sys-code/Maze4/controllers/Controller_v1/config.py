@@ -260,6 +260,18 @@ REVERSE_TIME   = 2.5    # s   How long the robot drives backward when stuck.
 TIP_OVER_TILT_RAD = 0.15   # rad . |roll| or |pitch| beyond this
                             # counts as tipped over.
 
+# When tipped, the map gets a wall SEGMENT stamped ahead of the robot, not
+# just its single current point -- see MazeExplorer._mark_tip_over_obstacle().
+# A single point only inflates to a small disk once the planner pads it,
+# and whatever the camera actually hit is unknown in EXTENT (it could be a
+# beam/ledge wider than the robot); a segment gives the very next replan
+# (triggered by the same tip-over signal -- see Explorer/GoToPoint._drive()'s
+# `tipped` handling) a wall wide enough that it can't just angle slightly
+# and try to squeeze past the same spot again.
+TIP_OVER_OBSTACLE_AHEAD_M         = ROBOT_RADIUS         # m, ahead of robot centre
+TIP_OVER_OBSTACLE_HALF_WIDTH_M    = ROBOT_RADIUS * 1.5   # m, either side of heading
+TIP_OVER_OBSTACLE_POINT_SPACING_M = GRID_RESOLUTION      # m, between marked points
+
 # --- Reactive safety reflex (short-range IR distance sensors) ----------------
 # A last line of defence, independent of the map: if a FRONT distance sensor
 # reads closer than this while the robot is driving, it immediately backs off
