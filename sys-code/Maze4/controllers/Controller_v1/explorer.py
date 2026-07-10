@@ -1490,7 +1490,7 @@ class MazeExplorer:
         self.robot.set_velocity(v, w)
 
         if self.goto.arrived:
-            print("[mission] arrived at the %s object -> %s" % (target_obj.color_name, arrived_mission))
+            print("[mission] arrived at the %s object -> %s - TIME: %f" % (target_obj.color_name, arrived_mission, self.robot.get_time()))
             self.mission = arrived_mission
 
         elif self.goto.failed:
