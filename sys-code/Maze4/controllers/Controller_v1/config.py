@@ -26,6 +26,21 @@ The grid array has its bottom-left corner at
 so that grid cell [row=nrows/2, col=ncols/2] corresponds to (0, 0).
 
 UNITS:  metres (m), radians (rad), seconds (s).
+
+PER-MAZE OVERRIDES
+--------------------
+Every maze (Maze1, Maze2, ...) shares this ONE codebase -- every module
+here imports sibling modules via the fully-qualified
+`Maze4.controllers.Controller_v1.*` path, and Python caches modules by
+that name, so there is only ever ONE copy of this config module in memory
+per process. A maze that needs different values (a different maze
+LAYOUT needs a different GRID_WIDTH_M/HEIGHT_M, for instance) does not
+need its own copy of the whole codebase: it supplies a small config.py of
+its own, next to its Controller_v1.py, containing ONLY the constants it
+wants to differ from the defaults below. See load_and_apply_overrides()
+at the bottom of this file for the loading mechanism, and any maze's
+Controller_v1.py for how it's invoked -- two lines, right after importing
+this module and before anything else (explorer.py, etc.) gets imported.
 """
 
 VIZALIZATION_NAV_GRID = False
@@ -173,6 +188,18 @@ FRONTIER_STICKINESS_COUNT     = 3     # times. Number of consecutive plans the t
 FRONTIER_STICKINESS_MATCH_TOL_M = 0.08  # m. How close a NEW cluster's centroid must be
                                           #    to the previous target to count as "the same one".
 
+# --- Target-seeking bias (steer frontier choice toward a seen target) -------
+# While searching for the blue/yellow object, once it has been SEEN at least
+# once (TrackedObject.seen) but isn't reachable yet (still walled off / not
+# yet close enough), we already know roughly WHICH DIRECTION it lies in. A
+# frontier that opens up in that same direction is more likely to lead
+# somewhere useful than one that leads away from it -- so we give it a cost
+# discount proportional to how well-aligned it is, using cosine similarity
+# between (robot -> frontier) and (robot -> seen target).
+# cos_sim ranges from -1 (opposite direction) to +1 (same direction), so the
+# discount smoothly turns into a PENALTY for frontiers pointing away.
+FRONTIER_TARGET_ALIGN_WEIGHT = 0.6   # cost (metres) subtracted per unit of cos_sim.
+
 # --- Last-resort frontier recheck (before giving up a colour search) --------
 # Explorer.finished (zero frontiers on the fully-inflated nav grid) doesn't
 # necessarily mean the maze truly has no more space to see -- the inflation
@@ -218,11 +245,11 @@ MAX_TURN_SPEED = 0.8    # rad/s  Maximum angular (turning) speed.
 HEADING_KP     = 2.2    # Proportional gain on heading error for pure pursuit.
                           # Increase -> turns more aggressively toward waypoints.
 
-LOOKAHEAD      = 0.16   # m  Pure-pursuit look-ahead distance.
+LOOKAHEAD      = 0.12   # m  Pure-pursuit look-ahead distance.
                           # Larger -> smoother but cuts corners more.
                           # Smaller -> tighter tracking but may oscillate.
 
-WAYPOINT_TOL   = 0.12   # m  A waypoint is considered "reached" when the
+WAYPOINT_TOL   = 0.08   # m  A waypoint is considered "reached" when the
                           # robot is within this distance of it.
 
 # --- Reactive safety (obstacle avoidance directly from the lidar scan) ------
@@ -674,3 +701,131 @@ MISSION_ENABLE_COLOR = True
 
 SAVE_MAP_PNG = "map_final.png"   # Final map image (matplotlib figure).
 SAVE_MAP_NPY = "map_final.npy"   # Raw log-odds array (NumPy binary format).
+
+# ===========================================================================
+# Per-maze config overrides
+# ===========================================================================
+# See the module docstring's "PER-MAZE OVERRIDES" section for the full
+# picture. In short: every maze shares this one config module (Python
+# caches it by its fully-qualified name), so a maze-specific config.py can
+# patch attributes directly onto it -- every OTHER module's
+# `import Maze4.controllers.Controller_v1.config as C` then sees the
+# patched values too, with no changes needed to any of them.
+
+import importlib.util
+import os
+import sys
+
+
+def recompute(skip=frozenset()):
+    """Re-derive every config constant that is computed FROM another
+    constant, using whatever the CURRENT values of those constants are.
+
+    WHY THIS EXISTS
+    -----------------
+    Constants like GRID_ORIGIN_X (from GRID_WIDTH_M) or
+    INFLATE_RADIUS_CELLS (from ROBOT_RADIUS / GRID_RESOLUTION) are computed
+    inline, once, at the point they're defined above. A per-maze override
+    that changes one of their INPUTS (e.g. a maze with a bigger layout
+    setting GRID_WIDTH_M) runs AFTER that inline computation already
+    happened, so without this function the derived constant would silently
+    keep this module's original (Maze4) value instead of tracking the
+    override. Call this once after applying any override that touches
+    GRID_WIDTH_M, GRID_HEIGHT_M, ROBOT_RADIUS, or GRID_RESOLUTION --
+    apply_overrides() below already does this for you.
+
+    Args:
+        skip : names to leave untouched -- used by apply_overrides() so a
+                maze that sets a DERIVED constant DIRECTLY (e.g. it wants a
+                GRID_ORIGIN_X that isn't simply "half the width") has that
+                explicit choice WIN, instead of this function immediately
+                overwriting it with the formula below.
+    """
+    global GRID_ORIGIN_X, GRID_ORIGIN_Y, INFLATE_RADIUS_CELLS
+    global TIP_OVER_OBSTACLE_AHEAD_M, TIP_OVER_OBSTACLE_HALF_WIDTH_M
+    global TIP_OVER_OBSTACLE_POINT_SPACING_M
+    global HAZARD_INFLATE_CELLS, INFLATE_CAMERA_OBSTACLE_CELLS
+    global CAMERA_OBSTACLE_LATERAL_SPACING_M, OBJECT_INFLATE_CELLS
+
+    # Place the grid origin so that world (0,0) falls in the middle (see the
+    # module docstring) -- the "+2" is a one-off Maze4-specific nudge; a
+    # maze that doesn't want it should just set GRID_ORIGIN_X itself.
+    if "GRID_ORIGIN_X" not in skip:
+        GRID_ORIGIN_X = -GRID_WIDTH_M / 2.0 + 2
+    if "GRID_ORIGIN_Y" not in skip:
+        GRID_ORIGIN_Y = -GRID_HEIGHT_M / 2.0
+
+    if "INFLATE_RADIUS_CELLS" not in skip:
+        INFLATE_RADIUS_CELLS = max(1, int(round(ROBOT_RADIUS / GRID_RESOLUTION)))
+
+    if "TIP_OVER_OBSTACLE_AHEAD_M" not in skip:
+        TIP_OVER_OBSTACLE_AHEAD_M = ROBOT_RADIUS
+    if "TIP_OVER_OBSTACLE_HALF_WIDTH_M" not in skip:
+        TIP_OVER_OBSTACLE_HALF_WIDTH_M = ROBOT_RADIUS * 1.5
+    if "TIP_OVER_OBSTACLE_POINT_SPACING_M" not in skip:
+        TIP_OVER_OBSTACLE_POINT_SPACING_M = GRID_RESOLUTION
+
+    if "HAZARD_INFLATE_CELLS" not in skip:
+        HAZARD_INFLATE_CELLS = INFLATE_RADIUS_CELLS
+    if "INFLATE_CAMERA_OBSTACLE_CELLS" not in skip:
+        INFLATE_CAMERA_OBSTACLE_CELLS = INFLATE_RADIUS_CELLS
+    if "CAMERA_OBSTACLE_LATERAL_SPACING_M" not in skip:
+        CAMERA_OBSTACLE_LATERAL_SPACING_M = GRID_RESOLUTION
+    if "OBJECT_INFLATE_CELLS" not in skip:
+        OBJECT_INFLATE_CELLS = INFLATE_RADIUS_CELLS
+
+
+def apply_overrides(source_module):
+    """Copy every UPPERCASE attribute from `source_module` onto this
+    module, then re-derive dependent constants via recompute() -- SKIPPING
+    any derived constant `source_module` set explicitly, so that explicit
+    choice wins instead of being immediately overwritten.
+
+    `source_module` is typically a maze's own config.py, loaded by
+    load_and_apply_overrides() below. It only needs to define the
+    constants it wants to CHANGE -- anything it doesn't define keeps this
+    module's existing (Maze4) value.
+    """
+    this_module = sys.modules[__name__]
+    overridden = set()
+    for name in dir(source_module):
+        if name.isupper():
+            setattr(this_module, name, getattr(source_module, name))
+            overridden.add(name)
+    recompute(skip=overridden)
+
+
+def load_and_apply_overrides(entry_point_file):
+    """Load `config.py` from the same folder as `entry_point_file` (pass
+    `__file__` from a maze's own Controller_v1.py) and apply it as a
+    per-maze override -- see apply_overrides()/recompute() above.
+
+    Call this right after `import Maze4.controllers.Controller_v1.config
+    as C`, and BEFORE importing anything else (explorer.py and everything
+    it pulls in) -- those modules read config values the moment they run,
+    so the override has to land first.
+
+    If that maze's folder has no config.py of its own, this is a silent
+    no-op: the maze just uses this module's own (Maze4) defaults.
+
+    Returns:
+        True if an override was found and applied, False otherwise.
+    """
+    maze_dir = os.path.dirname(os.path.abspath(entry_point_file))
+    maze_config_path = os.path.join(maze_dir, "config.py")
+    if not os.path.isfile(maze_config_path):
+        return False
+
+    spec = importlib.util.spec_from_file_location(
+        "_maze_config_override", maze_config_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    apply_overrides(module)
+    return True
+
+
+# Run once now so importing this module normally (single-maze use, no
+# per-maze config.py found/applied) behaves exactly as if the derived
+# constants above were still computed inline -- see recompute()'s
+# docstring.
+recompute()

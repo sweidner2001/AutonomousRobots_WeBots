@@ -505,7 +505,7 @@ class PathPlanner:
     # Frontier target selection
     # ---------------------------------------------------------------------- #
     def choose_target(self, grid, clusters, robot_xy, blocked, unknown,
-                      prev_target_xy=None):
+                      prev_target_xy=None, target_hint_xy=None):
         """Pick the best reachable frontier cluster for the robot to drive to.
 
         Tries clusters from nearest to farthest (to minimise the number of
@@ -527,6 +527,13 @@ class PathPlanner:
                               this, tiny map updates between PLAN cycles can
                               make the chosen frontier flip back and forth
                               between two similarly-costed candidates.
+            target_hint_xy : (x, y) world position of a tracked object that
+                              has been SEEN but not yet reached (e.g. the
+                              blue/yellow object during SEARCH_BLUE/YELLOW),
+                              or None.  Frontiers whose direction from the
+                              robot aligns with the direction to this hint
+                              get a cost discount -- see config.py
+                              FRONTIER_TARGET_ALIGN_WEIGHT.
 
         Returns:
             (path_rc, cluster) where:
@@ -535,6 +542,16 @@ class PathPlanner:
               cluster  : the chosen cluster dict, or None.
         """
         rx, ry = robot_xy
+
+        # Direction from the robot to the seen-but-unreached target, used
+        # below to bias cost-by-alignment (cosine similarity). None if there
+        # is no hint or the robot is already standing on top of it.
+        hint_dir = None
+        if target_hint_xy is not None:
+            hdx, hdy = target_hint_xy[0] - rx, target_hint_xy[1] - ry
+            hlen = math.hypot(hdx, hdy)
+            if hlen > 1e-6:
+                hint_dir = (hdx / hlen, hdy / hlen)
 
         # Identify which candidate cluster (if any) is "the same one" as the
         # previously chosen target, so we can apply the stickiness discount.
@@ -597,6 +614,17 @@ class PathPlanner:
             # Compute the combined cost (distance penalty, information gain).
             length_m = (len(path) - 1) * grid.res
             cost = length_m - C.INFO_GAIN_WEIGHT * math.sqrt(cl["size"])
+
+            # Target-seeking bias: discount frontiers that point toward a
+            # seen-but-unreached tracked object, penalise ones pointing away.
+            if hint_dir is not None:
+                gr, gc = cl["centroid"]
+                wx, wy = grid.grid_to_world(gc, gr)
+                fdx, fdy = wx - rx, wy - ry
+                flen = math.hypot(fdx, fdy)
+                if flen > 1e-6:
+                    cos_sim = (fdx * hint_dir[0] + fdy * hint_dir[1]) / flen
+                    cost -= C.FRONTIER_TARGET_ALIGN_WEIGHT * cos_sim
 
             # Stickiness discount: this candidate IS the previously chosen
             # target, so it must be beaten by a real margin, not a hair

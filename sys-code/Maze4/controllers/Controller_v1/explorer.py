@@ -207,7 +207,7 @@ class Explorer:
     # Main dispatch
     # ---------------------------------------------------------------------- #
     def update(self, pose, ranges, bearings, now, scan_similarity=1.0,
-               previous_speed_command=0.0, tipped=False):
+               previous_speed_command=0.0, tipped=False, target_hint_xy=None):
         """Return (v, w) wheel command for this control step.
 
         Called once per simulation step by MazeExplorer._act().
@@ -221,6 +221,11 @@ class Explorer:
                         detects the robot tipped over -- treated as an
                         immediate stuck signal during DRIVE (see
                         _drive()'s docstring).
+            target_hint_xy : (x, y) world position of a tracked object that
+                        has been seen but not yet reached, or None -- see
+                        planner.py: PathPlanner.choose_target()'s
+                        target_hint_xy for how this biases frontier choice.
+                        Only consulted while in the PLAN phase.
 
         Returns:
             (v, w) -- forward speed (m/s) and angular speed (rad/s).
@@ -228,7 +233,7 @@ class Explorer:
         if self.phase == self.SPIN_SEED:
             return self._spin(pose)
         if self.phase == self.PLAN:
-            return self._plan(pose, now)
+            return self._plan(pose, now, target_hint_xy)
         if self.phase == self.DRIVE:
             return self._drive(pose, ranges, bearings, now, scan_similarity,
                                 previous_speed_command, tipped)
@@ -283,7 +288,7 @@ class Explorer:
     # ---------------------------------------------------------------------- #
     # PLAN phase
     # ---------------------------------------------------------------------- #
-    def _plan(self, pose, now):
+    def _plan(self, pose, now, target_hint_xy=None):
         """Detect frontiers, choose the best one, plan an A* path to it.
 
         PIPELINE (4 steps):
@@ -378,7 +383,8 @@ class Explorer:
         path_rc, target = self.planner.choose_target(
             self.grid, candidates, (pose[0], pose[1]), blocked, unknown,
             prev_target_xy=self._prev_target_xy,
-        ) 
+            target_hint_xy=target_hint_xy,
+        )
 
         if path_rc is None or target is None:
             self._fail_count += 1
@@ -922,7 +928,7 @@ class MazeExplorer:
         while self.robot.step():
             self._perceive()
             self._act()
-            self._render()
+            # self._render()
         self._shutdown()
 
     # ---------------------------------------------------------------------- #
@@ -1375,8 +1381,14 @@ class MazeExplorer:
         object, this is not necessarily final -- see the ONE-SHOT RECHECK
         below -- before really moving on to `exhausted_mission`.
         """
+        # Once the object has been seen at least once, bias frontier choice
+        # toward its direction -- see planner.py: choose_target()'s
+        # target_hint_xy. Once it's reachable, GoToPoint takes over below
+        # anyway, so the hint no longer matters.
+        target_hint_xy = target_obj.world_xy if target_obj.seen else None
         v, w = self.explorer.update(self.pose, self.ranges, self.robot.bearings, self.now,
-                                    tipped=self._was_tipped)
+                                    tipped=self._was_tipped,
+                                    target_hint_xy=target_hint_xy)
         self.robot.set_velocity(v, w)
         self._refresh_object_reachability()
 

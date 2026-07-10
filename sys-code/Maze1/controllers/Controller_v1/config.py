@@ -1,33 +1,34 @@
 """
-config.py  --  All tunable constants for the RosBot maze explorer.
-==================================================================
+config.py  --  Maze1-specific config overrides.
+=================================================
 
 WHAT IS THIS FILE FOR?
 -----------------------
-Every number that controls the robot's behaviour lives here so that
-you can experiment without hunting through multiple files.  Think of
-it as the "settings panel" of the whole program.
+This is NOT a full copy of the shared config -- it only needs to define
+the constants THIS maze wants to differ from
+Maze4/controllers/Controller_v1/config.py's defaults. Everything else
+(the vast majority of tunables) is left alone.
 
-HOW THE COORDINATE SYSTEM WORKS
----------------------------------
-The robot does NOT know where it is in the real world when it starts.
-We simply define the starting position as (x=0, y=0) — our map origin.
-The map grid is large enough that the robot start is always in the
-middle:
+Controller_v1.py in this same folder loads this file and applies it as
+an override on the shared config module BEFORE anything else gets
+imported -- see that file's docstring, and
+Maze4/controllers/Controller_v1/config.py's "PER-MAZE OVERRIDES" section
+and load_and_apply_overrides()/apply_overrides()/recompute() for the
+full mechanism.
 
-           y
-           ^
-           |         map boundary
-    -------+---------> x
-           |   (0,0) = robot start
+EXAMPLE -- a maze with a bigger physical layout would set:
 
-The grid array has its bottom-left corner at
-  (GRID_ORIGIN_X, GRID_ORIGIN_Y) = (-W/2, -H/2)
-so that grid cell [row=nrows/2, col=ncols/2] corresponds to (0, 0).
+    GRID_WIDTH_M  = 12.0
+    GRID_HEIGHT_M = 14.0
 
-UNITS:  metres (m), radians (rad), seconds (s).
+GRID_ORIGIN_X/GRID_ORIGIN_Y (derived from the width/height above) get
+automatically RE-DERIVED to match -- no need to compute them by hand
+unless this maze wants an origin that ISN'T simply "centred on the
+width/height" (see recompute()'s docstring for how to override a
+derived constant directly instead).
+
+Currently empty: Maze1 uses every Maze4 default as-is.
 """
-
 VIZALIZATION_NAV_GRID = False
 
 # ===========================================================================
@@ -80,7 +81,7 @@ LIDAR_ANGLE_OFFSET = 0.0  # rad.  Extra rotation if the lidar is mounted
 # robot.py -- read_lidar() / _compute_lidar_angle_mask()), so every existing
 # consumer (map integration, frontier exploration, the safety reflex, ...)
 # automatically ignores them -- no other module needs to change.
-LIDAR_USE_FOV_DEG        = 230   # None = use the full sensor FOV. Degrees otherwise.
+LIDAR_USE_FOV_DEG        = 210   # None = use the full sensor FOV. Degrees otherwise.
 LIDAR_USE_FOV_CENTER_DEG = 0.0    # deg. Bearing at the centre of the window;
                                     # 0 = straight ahead, positive = left,
                                     # negative = right (same convention as bearings).
@@ -100,7 +101,7 @@ GRID_RESOLUTION = 0.04   # m per cell side.  Each cell is a 5 cm x 5 cm square.
                           # Smaller -> finer map, but more memory and slower.
 
 GRID_WIDTH_M  = 8.0     # Total map width in metres.  With 0.05 m/cell
-GRID_HEIGHT_M = 10.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
+GRID_HEIGHT_M = 8.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
 
 # Place the grid origin so that world (0,0) falls exactly in the middle.
 GRID_ORIGIN_X = -GRID_WIDTH_M  / 2.0 +2  # world x of grid column 0
@@ -519,7 +520,7 @@ ROBOT_CLEARANCE_HEIGHT_M = 0.21   # m
 # the-ray updates erode the wrong padding again.  Over-padding costs at most
 # a small detour; under-padding risks driving through the object.
 # CAMERA_OBSTACLE_DEPTH_PAD_M = 0.24   # m
-CAMERA_OBSTACLE_DEPTH_PAD_M = 0.20   # m
+CAMERA_OBSTACLE_DEPTH_PAD_M = 0.08   # m
 
 # One sampled column only tells us an obstacle exists AT that exact
 # bearing -- it says nothing about how far it extends to either side, and
@@ -674,3 +675,13 @@ MISSION_ENABLE_COLOR = True
 
 SAVE_MAP_PNG = "map_final.png"   # Final map image (matplotlib figure).
 SAVE_MAP_NPY = "map_final.npy"   # Raw log-odds array (NumPy binary format).
+
+# ===========================================================================
+# Per-maze config overrides
+# ===========================================================================
+# See the module docstring's "PER-MAZE OVERRIDES" section for the full
+# picture. In short: every maze shares this one config module (Python
+# caches it by its fully-qualified name), so a maze-specific config.py can
+# patch attributes directly onto it -- every OTHER module's
+# `import Maze4.controllers.Controller_v1.config as C` then sees the
+# patched values too, with no changes needed to any of them.

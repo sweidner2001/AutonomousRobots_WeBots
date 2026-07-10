@@ -1,6 +1,6 @@
 """
-Controller_v1.py  --  Webots entry point for the RosBot maze explorer.
-=======================================================================
+Controller_v1.py  --  Webots entry point for the RosBot maze explorer (Maze1).
+================================================================================
 
 THIS IS THE FILE WEBOTS LAUNCHES.
 
@@ -14,73 +14,52 @@ controllers/Controller_v1/ folder and runs it as a Python script.
 
 WHY IS THIS FILE SO SHORT?
 ----------------------------
-All the interesting behaviour lives in separate, well-named classes.
-This file is intentionally minimal: it just adds the project root to
-Python's import path and calls MazeExplorer().run().
-
-This is a common software engineering pattern:  keep the "entry point"
-as simple as possible and delegate all logic to well-tested classes.
-
-THE MODULE LAYOUT
-------------------
-    robot.py            -- Hardware abstraction (motors, sensors)
-    odometry.py         -- Pose estimation from encoders + IMU
-    occupancy_grid.py   -- Probabilistic map (log-odds grid)
-    frontier.py         -- Frontier detection (explore edges)
-    planner.py          -- Obstacle inflation + A* path planning
-    pilot.py            -- Pure-pursuit path following + reactive safety
-    mapviz.py           -- Live matplotlib visualisation
-    mission.py          -- High-level mission state constants
-    explorer.py (Maze5) -- Exploration FSM + top-level orchestrator
+All the interesting behaviour lives in one SHARED codebase (Maze4's
+controllers/Controller_v1/ package -- explorer.py, occupancy_grid.py,
+planner.py, ...). Every maze (Maze1, Maze2, ...) reuses that exact same
+code; this file's only two jobs are:
+  1. Apply THIS maze's own config.py as an override on top of the shared
+     defaults (see "PER-MAZE CONFIG" below) -- BEFORE anything else gets
+     imported.
+  2. Call MazeExplorer().run().
 
 HOW PYTHON IMPORTS WORK HERE
 ------------------------------
-Webots launches this file from inside the controllers/ folder.
-The "Maze4" and "Maze5" packages must be importable, so we need their
-parent directory (the repository root) to be in sys.path.
-
-We compute the repository root as:
-  __file__        = .../sys-code/Maze4/controllers/Controller_v1/Controller_v1.py
+Webots launches this file from inside the controllers/ folder. The
+"Maze4" package must be importable, so we need its parent directory (the
+repository root, "sys-code/") in sys.path. We compute that as:
+  __file__        = .../sys-code/Maze1/controllers/Controller_v1/Controller_v1.py
   go up 3 levels  = .../sys-code/
-  -> that is the folder that contains both "Maze4" and "Maze5"
+  -> the folder that contains Maze1, Maze4, ...
+and insert it into sys.path[0] so Python finds the shared package.
 
-We insert that path into sys.path[0] so Python finds the packages.
+PER-MAZE CONFIG
+------------------
+config.py (right next to this file) contains ONLY the constants THIS
+maze needs to differ from Maze4's defaults (e.g. a different
+GRID_WIDTH_M/GRID_HEIGHT_M for a differently-sized maze layout) -- it
+does not need to be a full copy of every constant. See
+Maze4/controllers/Controller_v1/config.py's "PER-MAZE OVERRIDES" section
+and load_and_apply_overrides() for the full mechanism: because Python
+caches modules by name, patching attributes on the shared config module
+HERE makes every other shared module's `import
+Maze4.controllers.Controller_v1.config as C` see the patched values too,
+with no changes needed to any of them.
 """
 
 import os
 import sys
 
 
+# --- Apply THIS maze's own config.py as an override, BEFORE importing -------
+# anything else -- explorer.py and everything it pulls in read config
+# values the moment they're imported, so the override has to land first.
+import Maze4.controllers.Controller_v1.config as C
+_applied = C.load_and_apply_overrides(__file__)
+print("[Controller_v1] Maze1 config.py override applied." if _applied
+      else "[Controller_v1] no Maze1 config.py override found -- using Maze4 defaults.")
 
-# The orchestrator (MazeExplorer) lives in Maze5's explorer module.
-# It imports all implementation modules from Maze4.
 from Maze4.controllers.Controller_v1.explorer import MazeExplorer
-
-class DebugHelper:
-    """
-    Helper class for debugging and visualizing the maze exploration process.
-
-    This class provides methods to visualize the navigable and unknown areas
-    of the maze using matplotlib. It can be used to debug the exploration
-    algorithm by showing the current state of the maze.
-    """
-
-    @staticmethod
-    def debug_show(navigable, unknown):
-        """
-        Display the navigable and unknown areas of the maze.
-
-        Parameters:
-        - navigable: A 2D numpy array representing the navigable cells (True for navigable, False otherwise).
-        - unknown: A 2D numpy array representing the unknown cells (True for unknown, False otherwise).
-        """
-        import matplotlib.pyplot as plt
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-        for ax, data, title in zip(axes, [navigable, unknown], ["navigable", "unknown"]):
-            ax.imshow(data, cmap="gray", origin="lower", interpolation="nearest")
-            ax.set_title(title)
-        plt.tight_layout()
-        plt.pause(0.001)
 
 
 def main():
