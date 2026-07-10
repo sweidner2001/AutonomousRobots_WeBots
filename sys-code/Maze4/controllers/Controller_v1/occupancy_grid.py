@@ -704,6 +704,26 @@ class OccupancyGrid:
             pad_m=C.CAMERA_OBSTACLE_DEPTH_PAD_M,
         )
 
+    def mark_camera_obstacle_world(self, xs, ys):
+        """Directly stamp OCCUPIED evidence into camera_obstacle_log at the
+        given world points -- no ray casting, no free-space update.
+
+        integrate_camera_obstacle() above needs a real (range, bearing)
+        detection to cast a ray from the camera to a hit point.  Sometimes
+        there isn't one: the robot's top-mounted camera can collide with an
+        overhang the lidar's fixed-height sweep passes clean under, tipping
+        the chassis (front wheels lifted) with no clean depth reading of
+        what it hit. In that case the robot's OWN current position is the
+        obstacle -- see MazeExplorer's tip-over check (robot.py
+        read_roll_pitch()) -- so this skips straight to the same OCCUPIED
+        update integrate_camera_obstacle()'s hit cells get, using the exact
+        same log-odds constants (C.L_OCC / C.L_CLAMP).
+
+        Args:
+            xs, ys : 1-D world coordinates (m) to mark occupied (may be empty).
+        """
+        self._add_logodds(self.camera_obstacle_log, xs, ys, C.L_OCC, C.L_CLAMP)
+
     def _integrate_camera_rays(self, x, y, theta, ranges, bearings, log, observed,
                                pad_m=0.0):
         """Shared ray-casting core for camera-origin (range, bearing) scans.

@@ -825,6 +825,11 @@ class MazeExplorer:
         self.ranges   = None       # latest lidar scan
         self.previous_ranges   = None       # previous lidar scan
 
+        # Tip-over detection (see _check_tip_over()) -- tracks whether the
+        # robot was ALREADY tipped last step, so the console message only
+        # prints on the transition instead of spamming every step.
+        self._was_tipped = False
+
         self._saved   = False      # prevent saving the map more than once
         self.out_dir  = os.path.dirname(os.path.abspath(__file__))
 
@@ -900,6 +905,8 @@ class MazeExplorer:
         )
         self.previous_ranges = self.ranges
         self.ranges  = self.robot.read_lidar()
+
+        self._check_tip_over()
 
         # Angular velocity since the last step, from the IMU-backed heading
         # (wrapped correctly across the +/-pi seam) -- used below to gate
@@ -1184,6 +1191,47 @@ class MazeExplorer:
             self.goto._trigger_replan()
         else:
             self.explorer._trigger_replan()
+
+    def _check_tip_over(self):
+        """Detect the robot physically tipped over and, if so, stamp a
+        camera obstacle at its current position.
+
+        WHY THIS IS NEEDED
+        --------------------
+        The lidar only sweeps ONE fixed horizontal plane, but the RGB-D
+        camera is mounted on TOP of the chassis -- it can hit an overhang
+        (e.g. a low doorway lip) the lidar sweep passes clean under. When
+        that happens the front wheels can ride up the obstacle and lift
+        off the ground: the robot is physically stuck, but nothing in the
+        map says anything is there. The IMU's roll/pitch (robot.py
+        read_roll_pitch()) stay near 0 while the chassis sits flat, so a
+        reading beyond C.TIP_OVER_TILT_RAD is a reliable "stuck on
+        something the map doesn't know about" signal. When that fires, the
+        robot's OWN current position IS the evidence, so we mark it
+        directly (see OccupancyGrid.mark_camera_obstacle_world()) rather
+        than needing a real camera depth hit -- the same inflation and
+        blocked-cell handling every other obstacle gets then keeps future
+        plans from routing back into this spot (the planner already
+        searches outward for a free start cell if the robot's own cell
+        ends up blocked, so this is safe even while the robot is standing
+        right on top of the mark).
+
+        Only prints on the tipped/not-tipped TRANSITION so the console
+        isn't spammed every step while stuck; the mark itself is cheap
+        log-odds evidence and safe to repeat every step it stays tipped.
+        """
+        roll, pitch = self.robot.read_roll_pitch()
+        tipped = max(abs(roll), abs(pitch)) >= C.TIP_OVER_TILT_RAD
+
+        if tipped:
+            if not self._was_tipped:
+                print("[robot] tipped over (roll=%.2f, pitch=%.2f rad) -- "
+                      "marking (%.2f, %.2f) as a camera obstacle."
+                      % (roll, pitch, self.pose[0], self.pose[1]))
+            self.grid.mark_camera_obstacle_world(
+                np.array([self.pose[0]]), np.array([self.pose[1]]))
+
+        self._was_tipped = tipped
 
     # ---------------------------------------------------------------------- #
     # Mission phase handlers

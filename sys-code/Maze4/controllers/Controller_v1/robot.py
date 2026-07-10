@@ -40,6 +40,7 @@ PUBLIC API
   read_lidar()        -- 1-D array of ranges (m); inf = no return
   read_encoders()     -- dict {'fl','fr','rl','rr'} of wheel angles (rad)
   read_yaw()          -- IMU heading (rad)
+  read_roll_pitch()   -- IMU (roll, pitch) (rad); large values = tipped over
   read_camera_rgb()   -- (H,W,3) uint8 RGB image
   read_camera_depth() -- (H,W) float32 depth image (m), perpendicular Z-depth
   set_velocity(v, w)  -- drive at v m/s forward, w rad/s turning
@@ -300,6 +301,21 @@ class Robot:
         Yaw increases counterclockwise (standard mathematical convention).
         """
         return self.imu.getRollPitchYaw()[2]
+
+    def read_roll_pitch(self):
+        """Return the IMU's (roll, pitch) in radians -- indices 0 and 1 of
+        the same getRollPitchYaw() reading read_yaw() takes index 2 from.
+
+        Both stay near 0 while the robot sits flat on the ground.  A large
+        PITCH means the chassis has tipped nose-up/nose-down (e.g. the
+        front wheels lifted off the ground); a large ROLL means it has
+        tipped sideways.  See MazeExplorer's tip-over check, which uses
+        this to detect the robot getting physically stuck on an obstacle
+        the top-mounted camera hit but the lidar's fixed-height sweep
+        passed clean under.
+        """
+        roll, pitch, _yaw = self.imu.getRollPitchYaw()
+        return roll, pitch
 
     def read_camera_rgb(self):
         """Return the latest RGB camera frame as a (H, W, 3) uint8 array.

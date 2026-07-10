@@ -234,6 +234,18 @@ STUCK_TIME     = 3.0    # s   If the robot moves less than STUCK_DIST in
 REVERSE_TIME   = 2.5    # s   How long the robot drives backward when stuck.
                           # After this it replans to a fresh frontier target.
 
+# --- Tip-over detection (IMU roll/pitch) -------------------------------------
+# The lidar only sweeps ONE fixed horizontal plane, but the RGB-D camera is
+# mounted on TOP of the chassis -- it can collide with an overhang (e.g. a
+# low doorway lip) that the lidar sweep passes clean under. When that
+# happens the front wheels can ride UP the obstacle and lift off the
+# ground, tipping the chassis. The IMU's roll/pitch (see robot.py
+# read_roll_pitch()) stay near 0 while the robot sits flat, so a large
+# reading is a reliable "physically stuck on something the map doesn't
+# know about yet" signal -- see MazeExplorer's tip-over check.
+TIP_OVER_TILT_RAD = 0.35   # rad (~20 deg). |roll| or |pitch| beyond this
+                            # counts as tipped over.
+
 # --- Reactive safety reflex (short-range IR distance sensors) ----------------
 # A last line of defence, independent of the map: if a FRONT distance sensor
 # reads closer than this while the robot is driving, it immediately backs off
