@@ -343,10 +343,22 @@ class Explorer:
             y_end = min(free_mask.shape[1], y + offset + 1)
 
             analyze_area = free_mask[x_start:x_end, y_start:y_end]
-            pixel_in_circle = analyze_area[kernel == 1]
+            # Near map borders analyze_area is smaller than the full kernel.
+            # Crop kernel to the same clipped window to keep shapes aligned.
+            kx_start = offset - (x - x_start)
+            ky_start = offset - (y - y_start)
+            kx_end = kx_start + (x_end - x_start)
+            ky_end = ky_start + (y_end - y_start)
+            kernel_crop = kernel[kx_start:kx_end, ky_start:ky_end]
+
+            if analyze_area.shape != kernel_crop.shape:
+                # Defensive guard against any unexpected index drift.
+                continue
+
+            pixel_in_circle = analyze_area[kernel_crop == 1]
             count_free_space = np.sum(pixel_in_circle)  
 
-            if np.sum(kernel) - count_free_space <= C.FRONTIER_ISOLATION_MAX_UNKNOWN_CELLS:
+            if np.sum(kernel_crop) - count_free_space <= C.FRONTIER_ISOLATION_MAX_UNKNOWN_CELLS:
                 self._blacklisted.add(cl["centroid"])
         
 

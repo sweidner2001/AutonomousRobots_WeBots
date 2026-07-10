@@ -96,7 +96,7 @@ LIDAR_USE_FOV_CENTER_DEG = 0.0    # deg. Bearing at the centre of the window;
 #   FREE     -- observed and probably empty.   White in the visualisation.
 #   OCCUPIED -- probably contains a wall.      Black in the visualisation.
 
-GRID_RESOLUTION = 0.03   # m per cell side.  Each cell is a 5 cm x 5 cm square.
+GRID_RESOLUTION = 0.04   # m per cell side.  Each cell is a 5 cm x 5 cm square.
                           # Smaller -> finer map, but more memory and slower.
 
 GRID_WIDTH_M  = 8.0     # Total map width in metres.  With 0.05 m/cell
@@ -218,11 +218,11 @@ MAX_TURN_SPEED = 0.8    # rad/s  Maximum angular (turning) speed.
 HEADING_KP     = 2.2    # Proportional gain on heading error for pure pursuit.
                           # Increase -> turns more aggressively toward waypoints.
 
-LOOKAHEAD      = 0.12   # m  Pure-pursuit look-ahead distance.
+LOOKAHEAD      = 0.16   # m  Pure-pursuit look-ahead distance.
                           # Larger -> smoother but cuts corners more.
                           # Smaller -> tighter tracking but may oscillate.
 
-WAYPOINT_TOL   = 0.08   # m  A waypoint is considered "reached" when the
+WAYPOINT_TOL   = 0.12   # m  A waypoint is considered "reached" when the
                           # robot is within this distance of it.
 
 # --- Reactive safety (obstacle avoidance directly from the lidar scan) ------
@@ -470,13 +470,35 @@ CAMERA_FLAT_TOL_M = 0.03   # m
 # depth at the run's TOP pixel (so the whole run spans at most ~this much).
 DEPTH_OBSTACLE_FLAT_TOL_M = 0.05   # m
 
-# A run only counts as an obstacle if it is between MIN and MAX pixels TALL
-# (measured in full-resolution image rows).  These bounds are what makes the
-# detector target LOW obstacles specifically: at 0.5-1.5 m a few-cm object
-# subtends roughly 20-80 px, whereas taller things (walls) subtend more and
-# are already handled by the lidar; noise subtends less.  Tune per world.
-DEPTH_OBSTACLE_MIN_RUN_PX = 3
-DEPTH_OBSTACLE_MAX_RUN_PX = 60
+# A run's REAL, back-projected height (its top pixel to its bottom pixel,
+# in METRES -- NOT a fixed pixel count; see the module docstring for why a
+# pixel-count bound isn't distance-invariant) must clear this floor to
+# count as a real surface at all, filtering single-row noise blips.
+DEPTH_OBSTACLE_MIN_HEIGHT_M = 0.03   # m
+
+# --- TALL + GROUNDED runs are ordinary walls -- not lidar-blind obstacles ---
+# A run taller than this is "tall" -- comparable to a full wall rather than
+# a low kerb/step/beam. Whether a TALL run should be trusted as a genuine
+# lidar-blind "flying wall" depends on whether it's GROUNDED (its bottom
+# pixel sits at floor height, within GROUND_PLANE_TOL_M):
+#   - tall AND grounded     -> an ordinary wall spanning from the floor
+#                               well past the lidar's own scan height. The
+#                               lidar sees this on its own; drop it here.
+#   - tall AND NOT grounded -> genuinely floats above the floor (e.g. an
+#                               overhang) -- exactly what this detector
+#                               exists for; keep it (still subject to the
+#                               drive-under check below).
+#   - short (either way)    -> a kerb/step/beam-sized object; grounded or
+#                               not doesn't matter, only whether the robot
+#                               can drive under it does (see drive-under
+#                               check below).
+# This is checked purely from the run's OWN geometry, not by cross-
+# referencing the live occ_mask() -- a lidar-based check is racy (the
+# camera can see and report an obstacle in the SAME or an EARLIER frame
+# than the lidar scan that would confirm the same cell, so "does occ_mask
+# already know this" depends on scan timing, not on what the obstacle
+# actually is).
+DEPTH_OBSTACLE_TALL_THRESHOLD_M = 0.25   # m
 
 # "Flying" obstacles: a hanging surface (e.g. a beam spanning the maze) is
 # only a real obstacle if the robot cannot fit UNDERNEATH it.  For every
@@ -485,7 +507,7 @@ DEPTH_OBSTACLE_MAX_RUN_PX = 60
 # point is above this clearance, the robot simply drives under -- do NOT
 # mark it as a wall.  RosBot 2 is ~0.20 m tall (lidar tower included);
 # keep a few cm of safety margin on top.
-ROBOT_CLEARANCE_HEIGHT_M = 0.32   # m
+ROBOT_CLEARANCE_HEIGHT_M = 0.21   # m
 
 # The camera only ever sees an obstacle's NEAR face -- everything behind it
 # is occluded, so the object's true depth is unknowable from one viewpoint.

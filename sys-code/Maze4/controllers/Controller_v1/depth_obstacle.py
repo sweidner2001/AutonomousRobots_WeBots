@@ -31,14 +31,46 @@ column is a reliable "there is an upright surface here" signal.
 
 So for each sampled column we walk down its pixels and group them into
 "runs" of near-constant depth (each pixel joins the current run while its
-depth stays within DEPTH_OBSTACLE_FLAT_TOL_M of the run's top pixel).  A
-run counts as an obstacle only if it is between DEPTH_OBSTACLE_MIN_RUN_PX
-and DEPTH_OBSTACLE_MAX_RUN_PX pixels tall:
+depth stays within DEPTH_OBSTACLE_FLAT_TOL_M of the run's top pixel).
+_column_runs() itself no longer judges a run's height at all -- it just
+groups pixels into depth-consistent runs, in raw pixel space. detect()
+decides accept/reject afterward, using each run's REAL (back-projected,
+metres) height and floor-grounding, not a raw pixel count -- see
+"WHY METRES, NOT PIXELS?" and "TALL + GROUNDED = AN ORDINARY WALL" below.
 
-  - too SHORT  -> depth-image noise, not a real surface.
-  - too TALL   -> a full wall / tall object, which the lidar already sees.
-  - in between -> exactly the low, lidar-blind obstacle we are after
-                  (a few-cm object at 0.5-1.5 m subtends ~20-80 px).
+WHY METRES, NOT PIXELS?
+--------------------------
+A FIXED pixel-count bound doesn't work: the same physical obstacle
+subtends MORE pixels the CLOSER the robot gets (pinhole projection,
+run_px ~= real_height_m * focal_length_px / depth_m), so a pixel range
+tuned to correctly accept an obstacle at 2-4 m rejects that SAME obstacle
+at 1 m as "too tall" -- a perspective artefact, not a real difference in
+the obstacle. Back-projecting both ends of the run (detect() back-projects
+the bottom pixel for the drive-under test, and the top pixel gets the
+identical treatment) and comparing the real height in metres makes the
+classification distance-invariant.
+
+TALL + GROUNDED = AN ORDINARY WALL (config.py DEPTH_OBSTACLE_TALL_THRESHOLD_M)
+--------------------------------------------------------------------------------
+Real height alone isn't enough, though: a TALL, flat wall's column can
+still get chopped into several shorter depth-consistent runs by ordinary
+noise/quantisation (DEPTH_OBSTACLE_FLAT_TOL_M), and any slice whose own
+measured height happens to look "obstacle-sized" would otherwise get
+reported as a NEW low obstacle -- even though it's really just a piece of
+a wall the lidar can see perfectly well. The distinguishing signal is
+whether the run reaches the FLOOR: a genuinely tall run whose bottom pixel
+sits at floor height (GROUND_PLANE_TOL_M) is presumptively an ordinary
+wall spanning well past the lidar's own scan height, so it gets dropped.
+A tall run that does NOT reach the floor (it's floating/suspended) is kept
+-- that is exactly the lidar-blind "flying wall" case this detector exists
+for. Short runs skip this distinction entirely: whether a kerb/step/beam
+happens to touch the floor or not doesn't matter, only whether the robot
+can drive under it does (see "WHY EXCLUDE 'FLYING' SURFACES..." below).
+This is judged purely from the run's OWN geometry -- deliberately NOT by
+cross-referencing the live occ_mask(): a lidar-based check is racy, since
+the camera can report an obstacle in the SAME frame as (or even before)
+the lidar scan that would confirm the same cell, so "does the lidar
+already know this" depends on scan timing, not on what the obstacle is.
 
 WHY EXCLUDE THE ORDINARY FLOOR?
 -------------------------------------
@@ -146,22 +178,24 @@ class DepthObstacleDetector:
 
         # ---- Step 1: find a constant-depth vertical run in each column ------
         # For every column we collect ONE representative pixel per qualifying
-        # run (the run's middle row, at the run's median depth) PLUS the row
-        # of the run's BOTTOM pixel -- needed for the drive-under test below.
-        sel_us, sel_vs, sel_depth, sel_v_bottom = [], [], [], []
+        # run (the run's middle row, at the run's median depth) PLUS the rows
+        # of the run's TOP and BOTTOM pixels -- needed to measure its REAL
+        # height (Step 3b') and for the drive-under test (Step 3b) below.
+        # _column_runs() no longer filters by height itself (see module
+        # docstring) -- every depth-consistent run comes through here.
+        sel_us, sel_vs, sel_depth, sel_v_top, sel_v_bottom = [], [], [], [], []
         n_cols = depth.shape[1]
         for j in range(n_cols):
             for (start, end) in self._column_runs(
-                    depth[:, j], valid[:, j], vs[:, j],
-                    C.DEPTH_OBSTACLE_FLAT_TOL_M,
-                    C.DEPTH_OBSTACLE_MIN_RUN_PX,
-                    C.DEPTH_OBSTACLE_MAX_RUN_PX):
+                    depth[:, j], valid[:, j], C.DEPTH_OBSTACLE_FLAT_TOL_M):
                 mid = (start + end) // 2
                 sel_us.append(us[mid, j])
                 sel_vs.append(vs[mid, j])
                 sel_depth.append(float(np.median(depth[start:end, j])))
-                # Largest row index in the run = lowest point of the surface
-                # in the image = physically closest to the floor.
+                # Smallest row index = highest point of the surface in the
+                # image; largest row index = lowest point, physically
+                # closest to the floor.
+                sel_v_top.append(vs[start, j])
                 sel_v_bottom.append(vs[end - 1, j])
 
         if not sel_us:
@@ -170,29 +204,64 @@ class DepthObstacleDetector:
         us_f       = np.asarray(sel_us,       dtype=np.float32)
         vs_f       = np.asarray(sel_vs,       dtype=np.float32)
         depth_f    = np.asarray(sel_depth,    dtype=np.float32)
+        v_top_f    = np.asarray(sel_v_top,    dtype=np.float32)
         v_bottom_f = np.asarray(sel_v_bottom, dtype=np.float32)
 
         # ---- Step 2: back-project (pinhole model, same as camera_geometry.py) --
+        # The run's own MID sample gives forward_lvl (used for the final
+        # range/bearing output) -- its height above ground is no longer used
+        # directly; the TOP/BOTTOM pixels below are what every height-based
+        # check needs (see Step 3-prep).
         right_cam = (us_f - self.intr.cx) * depth_f / self.intr.f
         down_cam  = (vs_f - self.intr.cy) * depth_f / self.intr.f
-        forward_lvl, drop_lvl = tilt_correct(down_cam, depth_f, C.CAMERA_TILT_RAD)
+        forward_lvl, _drop_lvl = tilt_correct(down_cam, depth_f, C.CAMERA_TILT_RAD)
+
+        # ---- Step 3-prep: back-project the run's TOP and BOTTOM pixels ---------
+        # Needed by every check below: the floor test, the drive-under test,
+        # and the tall+grounded test all care about the run's REAL extent,
+        # not its single midpoint sample.
+        down_top       = (v_top_f - self.intr.cy) * depth_f / self.intr.f
+        _, drop_top    = tilt_correct(down_top, depth_f, C.CAMERA_TILT_RAD)
+        top_height     = C.CAMERA_HEIGHT_M - drop_top
+
+        down_bottom    = (v_bottom_f - self.intr.cy) * depth_f / self.intr.f
+        _, drop_bottom = tilt_correct(down_bottom, depth_f, C.CAMERA_TILT_RAD)
+        bottom_height  = C.CAMERA_HEIGHT_M - drop_bottom
+
+        real_height_m  = np.abs(top_height - bottom_height)
 
         # ---- Step 3a: exclude the ordinary floor (safety net) ------------------
         # Same ground-plane test as floor_hazard.py, but INVERTED: we KEEP
-        # everything that is NOT at floor height.
-        height_above_ground = C.CAMERA_HEIGHT_M - drop_lvl
-        not_floor = np.abs(height_above_ground) > C.GROUND_PLANE_TOL_M
+        # everything that is NOT at floor height.  Uses the run's TOP pixel,
+        # NOT its midpoint: a genuinely short, grounded obstacle's own
+        # midpoint sits close to the floor BY CONSTRUCTION (half its own
+        # height) -- an 8 cm kerb's midpoint is only 4 cm up, inside
+        # GROUND_PLANE_TOL_M, which used to make this safety net reject real
+        # short obstacles as "floor". The top pixel is unambiguous: if even
+        # the run's highest point is within tolerance of the ground, there
+        # really is nothing there.
+        not_floor = np.abs(top_height) > C.GROUND_PLANE_TOL_M
 
         # ---- Step 3b: exclude "flying" surfaces the robot can drive UNDER ------
-        # Back-project each run's BOTTOM pixel and compute its height above
-        # the ground.  If even the surface's lowest visible point clears the
-        # robot (plus margin), it is a hanging beam, not a wall -- skip it.
-        down_bottom       = (v_bottom_f - self.intr.cy) * depth_f / self.intr.f
-        _, drop_bottom    = tilt_correct(down_bottom, depth_f, C.CAMERA_TILT_RAD)
-        bottom_height     = C.CAMERA_HEIGHT_M - drop_bottom
-        can_drive_under   = bottom_height > C.ROBOT_CLEARANCE_HEIGHT_M
+        # If even the surface's lowest visible point clears the robot (plus
+        # margin), it is a hanging beam, not a wall -- skip it.
+        can_drive_under = bottom_height > C.ROBOT_CLEARANCE_HEIGHT_M
 
-        keep = not_floor & ~can_drive_under
+        # ---- Step 3b': reject TALL runs that are GROUNDED (ordinary walls) -----
+        # See config.py DEPTH_OBSTACLE_TALL_THRESHOLD_M and the module
+        # docstring's "TALL + GROUNDED" section for the full reasoning). A
+        # run that is both TALL and GROUNDED (its bottom sits at floor
+        # height) is presumptively an ordinary wall spanning well past the
+        # lidar's own scan height -- the lidar already sees it, so drop it
+        # here. Short runs, and tall runs that do NOT reach the floor
+        # (genuinely floating), are left for the drive-under check above to
+        # decide.
+        tall_enough_for_noise = real_height_m >= C.DEPTH_OBSTACLE_MIN_HEIGHT_M
+        is_tall       = real_height_m >= C.DEPTH_OBSTACLE_TALL_THRESHOLD_M
+        is_grounded   = bottom_height <= C.GROUND_PLANE_TOL_M
+        ordinary_wall = is_tall & is_grounded
+
+        keep = not_floor & ~can_drive_under & tall_enough_for_noise & ~ordinary_wall
 
         # ---- Step 3c: SAFETY CHECK -- exclude the tracked blue/yellow -----------
         # object's OWN surface. A run's bad/blended depth right at the near-field
@@ -239,23 +308,27 @@ class DepthObstacleDetector:
 
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _column_runs(depth_col, valid_col, rows_col, tol, min_px, max_px):
-        """Yield (start, end) sampled-row index pairs (end exclusive) for each
-        near-constant-depth run in one column that is between `min_px` and
-        `max_px` image rows TALL.
+    def _column_runs(depth_col, valid_col, tol):
+        """Yield (start, end) sampled-row index pairs (end exclusive) for
+        every near-constant-depth run in one column.
 
         A pixel joins the current run while it is valid AND its depth stays
         within `tol` of the depth at the run's top pixel -- so the whole run
         spans at most ~`tol` in depth (an upright, camera-facing face).
 
+        Deliberately does NOT judge whether a run is obstacle-sized -- that
+        decision needs the run's REAL (back-projected, metres) height, not
+        just its raw sampled-row count, so it happens in detect() instead
+        (see module docstring for why: a pixel-count bound isn't distance-
+        invariant). Every depth-consistent run is yielded here, including
+        1-row "runs" -- detect() back-projects each one's top and bottom
+        pixel and filters on the real height difference, which is
+        automatically ~0 for a 1-row run and gets rejected there.
+
         Args:
             depth_col : 1-D depths down one column (sampled rows).
             valid_col : 1-D bool, True where depth_col is usable.
-            rows_col  : 1-D real image-row index of each sampled row (used to
-                         measure a run's pixel height in FULL-resolution rows).
             tol       : max depth spread within a run (m).
-            min_px    : minimum run height to accept (full-resolution rows).
-            max_px    : maximum run height to accept (full-resolution rows).
         """
         n = len(depth_col)
         i = 0
@@ -268,9 +341,5 @@ class DepthObstacleDetector:
             while (j < n and valid_col[j]
                    and abs(depth_col[j] - top_depth) <= tol):
                 j += 1
-            # Run is rows [i, j).  Its height in real image rows is the gap
-            # between the first and last sampled row it covers.
-            run_px = float(rows_col[j - 1] - rows_col[i])
-            if min_px <= run_px <= max_px:
-                yield (i, j)
+            yield (i, j)
             i = j

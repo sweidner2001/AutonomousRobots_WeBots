@@ -731,17 +731,14 @@ class OccupancyGrid:
         Places the sensor origin at the camera's mount offset (the same
         CAMERA_FORWARD_M / CAMERA_LATERAL_M constants floor_hazard.py and
         colored_objects.py use).  FREE cells along each ray are marked
-        per-ray (redundant free evidence is harmless).  OCCUPIED cells --
-        a small LATERAL spread of C.CAMERA_OBSTACLE_LATERAL_POINTS cells
-        around each hit (see config.py -- one sampled column says nothing
-        about how far the surface extends sideways), plus the occlusion-
-        padding stretch behind it if pad_m > 0 -- are collected across ALL
-        rays and applied ONCE PER CELL at the end -- see _add_logodds()'s
-        docstring for why: many candidate points from ONE frame can
-        converge on the SAME cell at close range, and applying L_OCC once
-        per point (instead of once per cell) can slam a cell to the clamp
-        ceiling in a single frame, making it effectively impossible to
-        erase later.
+        per-ray (redundant free evidence is harmless).  OCCUPIED cells (the
+        hit itself, plus the occlusion-padding stretch behind it if
+        pad_m > 0) are collected across ALL rays and applied ONCE PER CELL
+        at the end -- see _add_logodds()'s docstring for why: many candidate
+        points from ONE frame can converge on the SAME cell at close range,
+        and applying L_OCC once per point (instead of once per cell) can
+        slam a cell to the clamp ceiling in a single frame, making it
+        effectively impossible to erase later.
 
         REJECTING "FLYING" CANDIDATES BEHIND ALREADY-CONFIRMED SOLID CELLS
         --------------------------------------------------------------------
@@ -770,6 +767,22 @@ class OccupancyGrid:
         out another ray's earlier, correct "something is here" evidence,
         even though the depth camera can no more see through its own
         previously-confirmed obstacle than through a lidar wall.
+
+        DROPPING CANDIDATES THAT LAND ON AN ALREADY LIDAR-MAPPED WALL
+        ------------------------------------------------------------------
+        Separately from the line-of-sight check above: a candidate whose
+        endpoint lands ON a cell occ_mask() already confirms is a real wall
+        carries no new information, and is very often actually a slice of
+        an ordinary TALL wall -- not a genuine low, lidar-blind obstacle at
+        all. depth_obstacle.py's height filter judges each depth-consistent
+        run purely by its own top/bottom pixels; a tall, flat wall's column
+        can still get split into several shorter runs by ordinary depth
+        noise/quantisation (DEPTH_OBSTACLE_FLAT_TOL_M), and any slice whose
+        measured height happens to land inside the low-obstacle window gets
+        reported as a candidate regardless of whether the lidar already
+        maps that exact spot. This check drops those before they ever
+        reach camera_obstacle_log, instead of merely suppressing their
+        occlusion padding.
         """
         if len(ranges) == 0:
             return
@@ -782,11 +795,20 @@ class OccupancyGrid:
         cos_a = np.cos(world_ang)
         sin_a = np.sin(world_ang)
 
+        # Live snapshot of the lidar's OWN wall map, kept separate from
+        # blocking_mask below -- see the "hit coincides with a LIDAR wall"
+        # check a few lines down for why: that check must ask specifically
+        # "does the lidar already know this", not "is this cell solid for
+        # ANY reason" (which would also match this map's own prior
+        # detections and wrongly suppress ordinary log-odds reinforcement
+        # of a genuine, repeatedly-seen low obstacle).
+        lidar_wall_mask = self.occ_mask()
+
         # Live snapshot of everything ALREADY confirmed solid -- lidar
         # walls AND this map's own prior camera-obstacle detections, taken
         # ONCE for the whole frame -- see _mark_free_along_ray_checked()'s
         # docstring.
-        blocking_mask = self.occ_mask() | self.camera_obstacle_mask()
+        blocking_mask = lidar_wall_mask | self.camera_obstacle_mask()
 
         occ_rows, occ_cols = [], []
         for i in range(len(ranges)):
@@ -802,6 +824,22 @@ class OccupancyGrid:
                 # docstring above). Free marking already stopped AT that
                 # cell; there is no point beyond it, and no occlusion
                 # padding to add either.
+                continue
+
+            # The hit itself lands on a cell the LIDAR has already mapped
+            # as a wall -- this candidate is NOT a lidar-blind obstacle at
+            # all, just an ordinary wall the lidar already sees (see this
+            # method's docstring on distance-invariant detection: a tall
+            # wall's depth-consistent run can easily land inside the
+            # low-obstacle height window purely by chance -- FLAT_TOL_M
+            # noise/quantisation splits a tall, flat wall's column into
+            # several shorter constant-depth chunks, and any chunk whose
+            # measured height happens to fall in [MIN, MAX]_HEIGHT_M gets
+            # treated as "new", whether or not it's actually grounded at
+            # the floor). There is nothing here for the camera-only map to
+            # add: drop it entirely rather than duplicating an already-
+            # known wall into camera_obstacle_log.
+            if self.in_bounds(c1, r1) and lidar_wall_mask[r1, c1]:
                 continue
 
             if self.in_bounds(c1, r1):
