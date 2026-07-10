@@ -473,7 +473,7 @@ DEPTH_OBSTACLE_MAX_RUN_PX = 60
 # point is above this clearance, the robot simply drives under -- do NOT
 # mark it as a wall.  RosBot 2 is ~0.20 m tall (lidar tower included);
 # keep a few cm of safety margin on top.
-ROBOT_CLEARANCE_HEIGHT_M = 0.24   # m
+ROBOT_CLEARANCE_HEIGHT_M = 0.22   # m
 
 # The camera only ever sees an obstacle's NEAR face -- everything behind it
 # is occluded, so the object's true depth is unknowable from one viewpoint.

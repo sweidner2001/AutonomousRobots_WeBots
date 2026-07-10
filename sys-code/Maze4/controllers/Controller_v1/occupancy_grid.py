@@ -740,19 +740,33 @@ class OccupancyGrid:
         slam a cell to the clamp ceiling in a single frame, making it
         effectively impossible to erase later.
 
-        REJECTING "FLYING" CANDIDATES BEHIND A CONFIRMED WALL
-        ------------------------------------------------------------
+        REJECTING "FLYING" CANDIDATES BEHIND ALREADY-CONFIRMED SOLID CELLS
+        --------------------------------------------------------------------
         A candidate point is bad depth data -- registration/parallax noise,
         or the near-field blind zone right at an object/wall boundary (see
-        depth_obstacle.py) -- whenever it lands BEHIND a wall the lidar has
-        already confirmed solid: the depth camera physically cannot see
-        through a real wall, so such a point cannot be a genuine surface.
-        _mark_free_along_ray_checked() walks each ray against a live
-        occ_mask() snapshot and rejects any candidate whose straight-line
-        path from the sensor crosses a confirmed wall cell first -- this is
-        what stops the "flying wall" artefact reported near the blue
-        cylinder (and the real wall behind it) from ever reaching
-        camera_obstacle_log in the first place.
+        depth_obstacle.py) -- whenever it lands BEHIND something already
+        confirmed solid: the depth camera physically cannot see through a
+        real wall OR a real obstacle it has already flagged itself, so such
+        a point cannot be a genuine surface. _mark_free_along_ray_checked()
+        walks each ray against a live snapshot of BOTH occ_mask() (lidar
+        walls) AND camera_obstacle_mask() (this map's OWN previous
+        detections) and rejects any candidate whose straight-line path from
+        the sensor crosses a confirmed cell of EITHER kind first.
+
+        INCLUDING camera_obstacle_mask() ITSELF IS THE PART THAT STOPS
+        OBSTACLES FROM BEING ERASED FROM THE SIDE
+        ------------------------------------------------------------------------
+        Using occ_mask() alone stopped a candidate from being placed BEHIND
+        a lidar wall, but did nothing to stop a DIFFERENT ray -- one frame
+        later, at a different bearing, e.g. once the robot has driven
+        alongside a low obstacle and is now looking past it at an angle --
+        from sweeping its FREE-marking straight through a cell THIS SAME
+        map had already confirmed occupied.  That is exactly how a real
+        obstacle sitting to the robot's side got erased while driving
+        forward past it: one ray's "clear path to something farther" wiped
+        out another ray's earlier, correct "something is here" evidence,
+        even though the depth camera can no more see through its own
+        previously-confirmed obstacle than through a lidar wall.
         """
         if len(ranges) == 0:
             return
@@ -765,9 +779,11 @@ class OccupancyGrid:
         cos_a = np.cos(world_ang)
         sin_a = np.sin(world_ang)
 
-        # Live snapshot of the lidar wall map, taken ONCE for the whole
-        # frame -- see _mark_free_along_ray_checked()'s docstring.
-        wall_mask = self.occ_mask()
+        # Live snapshot of everything ALREADY confirmed solid -- lidar
+        # walls AND this map's own prior camera-obstacle detections, taken
+        # ONCE for the whole frame -- see _mark_free_along_ray_checked()'s
+        # docstring.
+        blocking_mask = self.occ_mask() | self.camera_obstacle_mask()
 
         occ_rows, occ_cols = [], []
         for i in range(len(ranges)):
@@ -776,12 +792,13 @@ class OccupancyGrid:
             c1, r1 = self.world_to_grid(ex, ey)
 
             clear = self._mark_free_along_ray_checked(
-                c0, r0, c1, r1, log, observed, wall_mask)
+                c0, r0, c1, r1, log, observed, blocking_mask)
             if not clear:
-                # Line of sight to this candidate crosses a confirmed wall
-                # first -- reject it outright (see docstring above). Free
-                # marking already stopped AT the wall; there is no point
-                # beyond it, and no occlusion padding to add either.
+                # Line of sight to this candidate crosses an already-
+                # confirmed solid cell first -- reject it outright (see
+                # docstring above). Free marking already stopped AT that
+                # cell; there is no point beyond it, and no occlusion
+                # padding to add either.
                 continue
 
             if self.in_bounds(c1, r1):
@@ -791,32 +808,32 @@ class OccupancyGrid:
             if pad_m <= 0.0:
                 continue
 
-            # The hit itself coincides with an ALREADY-confirmed lidar
-            # wall cell -- entirely normal when the detected surface is
-            # genuinely flush against one (or IS the wall's own near
+            # The hit itself coincides with an ALREADY-confirmed solid
+            # cell -- entirely normal when the detected surface is
+            # genuinely flush against one (or IS that cell's own near
             # face). There is nothing "new" here to pad behind: assuming
             # the surface continues past a cell we already fully know
             # about is exactly how a thin real wall gets a phantom
             # obstacle punched through it into whatever room/corridor
             # sits on the far side -- the "flying wall behind the blue
             # cylinder" artefact reported. Skip padding entirely here.
-            if self.in_bounds(c1, r1) and wall_mask[r1, c1]:
+            if self.in_bounds(c1, r1) and blocking_mask[r1, c1]:
                 continue
 
             # Occlusion padding: continue the ray behind the visible face --
             # those cells are ALSO occupied evidence, collected the same
-            # way. STOP at the first already-confirmed lidar wall cell it
+            # way. STOP at the first already-confirmed solid cell it
             # reaches too, for the same reason -- the padding fills in the
             # OCCLUDED BODY of the thing we just detected, not a punch
-            # through some OTHER unrelated real wall further along the ray.
+            # through some OTHER unrelated solid cell further along the ray.
             ex2 = sx + (ranges[i] + pad_m) * cos_a[i]
             ey2 = sy + (ranges[i] + pad_m) * sin_a[i]
             c2, r2 = self.world_to_grid(ex2, ey2)
             for (c, r) in _bresenham(c1, r1, c2, r2)[1:]:
                 if not self.in_bounds(c, r):
                     continue
-                if wall_mask[r, c]:
-                    break   # hit a real wall -- do not pad through it
+                if blocking_mask[r, c]:
+                    break   # hit a confirmed solid cell -- do not pad through it
                 occ_rows.append(r)
                 occ_cols.append(c)
 
@@ -830,31 +847,37 @@ class OccupancyGrid:
             if observed is not None:
                 observed[rr, cc] = True
 
-    def _mark_free_along_ray_checked(self, c0, r0, c1, r1, log, observed, wall_mask):
+    def _mark_free_along_ray_checked(self, c0, r0, c1, r1, log, observed, blocking_mask):
         """Mark cells from (c0,r0) up to (but excluding) (c1,r1) as FREE --
-        UNLESS the ray crosses a `wall_mask` cell first, in which case free
-        marking stops AT that wall and the endpoint is rejected.
+        UNLESS the ray crosses a `blocking_mask` cell first, in which case
+        free marking stops there and the endpoint is rejected.
 
         Split out of _ray() so _integrate_camera_rays() can de-duplicate the
         OCCUPIED end-cell across all rays separately (see that method's
         docstring) while still marking free space per-ray as usual.
 
         Args:
-            wall_mask : live occ_mask() snapshot -- the lidar's confirmed
-                         wall cells. A candidate whose path crosses one is
-                         physically impossible (see _integrate_camera_rays()'s
-                         docstring) and must not be trusted.
+            blocking_mask : live snapshot of everything ALREADY confirmed
+                              solid (occ_mask() | camera_obstacle_mask()).
+                              A candidate whose path crosses one of these
+                              cells is physically impossible (see
+                              _integrate_camera_rays()'s docstring) and
+                              must not be trusted -- and, just as
+                              importantly, must not be allowed to erase
+                              that cell's own prior evidence by marking it
+                              free on the way to a farther point.
 
         Returns:
             bool -- True if the ray reached (c1, r1) with clear line of
-            sight; False if it was blocked by a wall cell first (the
-            caller must then discard this candidate's endpoint).
+            sight; False if it was blocked by an already-confirmed solid
+            cell first (the caller must then discard this candidate's
+            endpoint).
         """
         cells = _bresenham(c0, r0, c1, r1)
         for (c, r) in cells[:-1]:
             if not self.in_bounds(c, r):
                 continue
-            if wall_mask[r, c]:
+            if blocking_mask[r, c]:
                 return False
             log[r, c] = max(log[r, c] + C.L_FREE, -C.L_CLAMP)
             if observed is not None:
