@@ -818,6 +818,13 @@ class MazeExplorer:
         self.mission  = Mission.EXPLORE_MAP
         # self.mission  = Mission.SEARCH_BLUE
 
+        # RECHECK_FRONTIER bookkeeping (see _act_search() /
+        # _act_recheck_frontier()): guards the reduced-inflation last-resort
+        # attempt to ONE try per exhaustion, and remembers which SEARCH_*
+        # mission to return to once it finishes.
+        self._recheck_attempted     = False
+        self._recheck_return_mission = None
+
         # Per-step counters / state.
         self.step_i   = 0          # step counter (incremented every step)
         self.now      = 0.0        # current simulation time (seconds)
@@ -1055,6 +1062,10 @@ class MazeExplorer:
           GO_BLUE        -> GoToPoint FSM drives straight to the blue object.
           SEARCH_YELLOW  -> same as SEARCH_BLUE, but for yellow.
           GO_YELLOW      -> same as GO_BLUE, but for yellow.
+          RECHECK_FRONTIER -> one-shot last resort before a SEARCH_* gives
+                             up: GoToPoint FSM drives to a frontier that
+                             only appears with the inflation margin shrunk
+                             (see _act_search() / _act_recheck_frontier()).
           DONE           -> stop motors, save map once.
 
         Note: perception (_perceive(), called just before _act() every
@@ -1082,6 +1093,9 @@ class MazeExplorer:
 
         elif self.mission == Mission.GO_YELLOW:
             self._act_go_to(self.yellow_object, Mission.DONE, Mission.SEARCH_YELLOW)
+
+        elif self.mission == Mission.RECHECK_FRONTIER:
+            self._act_recheck_frontier()
 
         elif self.mission == Mission.DONE:
             self.robot.stop()
@@ -1187,7 +1201,7 @@ class MazeExplorer:
 
     def _force_replan(self):
         """Discard the current path and make the active FSM plan afresh."""
-        if self.mission in (Mission.GO_BLUE, Mission.GO_YELLOW):
+        if self.mission in (Mission.GO_BLUE, Mission.GO_YELLOW, Mission.RECHECK_FRONTIER):
             self.goto._trigger_replan()
         else:
             self.explorer._trigger_replan()
@@ -1257,7 +1271,8 @@ class MazeExplorer:
         to GoToPoint.
 
         If the whole map gets fully explored first without finding the
-        object, move on to `exhausted_mission` instead of stalling forever.
+        object, this is not necessarily final -- see the ONE-SHOT RECHECK
+        below -- before really moving on to `exhausted_mission`.
         """
         v, w = self.explorer.update(self.pose, self.ranges, self.robot.bearings, self.now)
         self.robot.set_velocity(v, w)
@@ -1270,7 +1285,7 @@ class MazeExplorer:
             self.goto.start(target_obj.world_xy)
             self.mission = go_mission
             return
-        
+
         if target_obj.seen and target_obj.was_reachable:
             print("[mission] %s object found and was reachable at (%.2f, %.2f) -> %s. Additional logic applied."
                   % (target_obj.color_name, target_obj.world_xy[0],
@@ -1280,10 +1295,61 @@ class MazeExplorer:
             return
 
         if self.explorer.finished:
+            # ONE-SHOT RECHECK: "finished" only means zero frontiers on the
+            # FULLY inflated nav grid -- the safety margin (or a single
+            # noisy wall pixel that never got a second lidar look) can seal
+            # off space that is physically open. Before giving up, try once
+            # more with every inflation margin shrunk by
+            # C.FRONTIER_RECHECK_INFLATE_REDUCTION cells (see planner.py:
+            # PathPlanner.find_nearest_frontier_reduced_inflation()).
+            # self._recheck_attempted guards this to ONE attempt per
+            # exhaustion -- reset only when we actually give up for real
+            # below, so a later SEARCH_* cycle gets a fresh attempt too.
+            if not self._recheck_attempted:
+                self._recheck_attempted = True
+                recheck_xy = self.planner.find_nearest_frontier_reduced_inflation(
+                    self.grid, self.frontier, self.pose[:2],
+                    reducing_factor=C.FRONTIER_RECHECK_INFLATE_REDUCTION,
+                )
+                if recheck_xy is not None:
+                    print("[mission] map 'fully explored' but %s never found -- one more look with a %d-cell-smaller wall margin, "
+                          "heading for (%.2f, %.2f)." % (target_obj.color_name, C.FRONTIER_RECHECK_INFLATE_REDUCTION, recheck_xy[0], recheck_xy[1]))
+                    self._recheck_return_mission = self.mission
+                    self.goto.start(recheck_xy)
+                    self.mission = Mission.RECHECK_FRONTIER
+                    return
+
             print("[mission] map fully explored, %s object never found/reachable -> %s"
                   % (target_obj.color_name, exhausted_mission))
+            self._recheck_attempted = False   # fresh chance next SEARCH_* cycle
             self.explorer.resume()   # in case exhausted_mission is another SEARCH_* state
             self.mission = exhausted_mission
+
+    def _act_recheck_frontier(self):
+        """RECHECK_FRONTIER: one-shot last-resort drive toward a frontier
+        that only appears once the inflation margin is shrunk (see
+        _act_search()'s "ONE-SHOT RECHECK" block).
+
+        Reuses GoToPoint exactly as GO_BLUE/GO_YELLOW do -- including its
+        plan_path_near_blocked_target() fallback -- so a corridor sealed by
+        a single noisy wall pixel or just the safety margin gets the same
+        "get as close as safely possible" treatment a sealed-off tracked
+        object does.
+
+        Whichever way it ends (arrived or gave up), control returns to the
+        SEARCH_* mission this came from: by then the robot has moved and
+        the lidar has scanned the previously sealed-off area, so a noisy
+        wall pixel there gets a fresh chance to decay away (ordinary
+        log-odds correction) before Explorer re-plans with the FULL margin.
+        """
+        v, w = self.goto.update(self.pose, self.ranges, self.robot.bearings, self.now)
+        self.robot.set_velocity(v, w)
+
+        if self.goto.arrived or self.goto.failed:
+            print("[mission] frontier recheck drive finished (arrived=%s) -> back to %s"
+                  % (self.goto.arrived, self._recheck_return_mission))
+            self.explorer.resume()
+            self.mission = self._recheck_return_mission
 
 
 
@@ -1382,8 +1448,8 @@ class MazeExplorer:
                 fmask     : 2D boolean NumPy array of frontier cells
                 fclusters : list of dicts, each with keys 'centroid' and 'size'
         """
-        if self.mission == Mission.GO_BLUE or self.mission == Mission.GO_YELLOW:
-            # In GO_BLUE/GO_YELLOW, the GoToPoint FSM is active, but we still want to show the last Explorer data.
+        if self.mission in (Mission.GO_BLUE, Mission.GO_YELLOW, Mission.RECHECK_FRONTIER):
+            # In GO_BLUE/GO_YELLOW/RECHECK_FRONTIER, the GoToPoint FSM is active, but we still want to show the last Explorer data.
             return {
                 "nav": self.goto._nav_cache,
                 "fmask": None,      # GoToPoint does not compute frontiers
@@ -1402,7 +1468,7 @@ class MazeExplorer:
         Explorer and GoToPoint are never active at the same time (see
         _act()), so exactly one of them holds the currently-relevant path.
         """
-        if self.mission in (Mission.GO_BLUE, Mission.GO_YELLOW):
+        if self.mission in (Mission.GO_BLUE, Mission.GO_YELLOW, Mission.RECHECK_FRONTIER):
             return self.goto.world_path, self.goto.target_xy
         return self.explorer.world_path, self.explorer.target_xy
 

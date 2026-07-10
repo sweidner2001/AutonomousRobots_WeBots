@@ -53,3 +53,11 @@ class Mission:
     SEARCH_YELLOW = "SEARCH_YELLOW" # Blue reached -- now look for yellow.
     GO_YELLOW     = "GO_YELLOW"     # Yellow found -- navigate to it.
     DONE          = "DONE"          # Mission complete -- stop all motors.
+
+    # One-shot last resort: SEARCH_BLUE/SEARCH_YELLOW think the map is fully
+    # explored (no frontiers) without ever finding the target.  Before really
+    # giving up, drive toward a frontier that only appears once the
+    # inflation margin is shrunk by a cell -- see MazeExplorer._act_search()
+    # / _act_recheck_frontier().  Afterward, control returns to whichever
+    # SEARCH_* state entered this one.
+    RECHECK_FRONTIER = "RECHECK_FRONTIER"

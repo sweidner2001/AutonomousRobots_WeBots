@@ -96,13 +96,13 @@ class PathPlanner:
     ]
 
 
-    def get_block_cells_for_frontier_exploration(self, grid):
-        hazard_blocked = self._inflate(grid.hazard_mask(),    C.HAZARD_INFLATE_CELLS)
-        wall_blocked   = self._inflate(grid.occ_mask(),       C.INFLATE_RADIUS_CELLS)
-        object_blocked = self._inflate(grid.any_object_mask(), C.OBJECT_INFLATE_CELLS)
+    def get_block_cells_for_frontier_exploration(self, grid, reducing_factor=0):
+        hazard_blocked = self._inflate(grid.hazard_mask(),    C.HAZARD_INFLATE_CELLS - reducing_factor)
+        wall_blocked   = self._inflate(grid.occ_mask(),       C.INFLATE_RADIUS_CELLS - reducing_factor)
+        object_blocked = self._inflate(grid.any_object_mask(), C.OBJECT_INFLATE_CELLS - reducing_factor)
         # Low, lidar-blind obstacles live in their own camera-only map (see
         # occupancy_grid.integrate_camera_obstacle) -- fold them in like walls.
-        camera_obs_blocked = self._inflate(grid.camera_obstacle_mask(), C.INFLATE_RADIUS_CELLS)
+        camera_obs_blocked = self._inflate(grid.camera_obstacle_mask(), C.INFLATE_RADIUS_CELLS - reducing_factor)
         blocked = wall_blocked | hazard_blocked | object_blocked | camera_obs_blocked
         return blocked
     
@@ -145,6 +145,9 @@ class PathPlanner:
                                               inflate_wall_cells=C.INFLATE_RADIUS_CELLS,
                                               inflate_camera_obstacle_cells=C.INFLATE_CAMERA_OBSTACLE_CELLS):
         hazard_blocked = self._inflate(grid.hazard_mask(),    hazard_inflate_cells)
+        # Low, lidar-blind obstacles (camera-only map) block the target route
+        # too -- same as walls (see occupancy_grid.integrate_camera_obstacle).
+        # camera_obs_blocked = self._inflate(grid.camera_obstacle_mask(), inflate_camera_obstacle_cells)
 
         # blue_mask = grid.object_mask("blue")
         # yellow_mask = grid.object_mask("yellow")
@@ -156,14 +159,24 @@ class PathPlanner:
 
         object_mask_for_delete_frontiers = self._inflate(object_area, object_inflate_cells - 1)
         occ_mask_delete_lidar_scan_to_target = grid.occ_mask() & object_mask_for_delete_frontiers
+        occ_mask_delete_lidar_scan_to_target_2 = grid.camera_obstacle_mask() & self._inflate(object_area, object_inflate_cells)
         nav_to_target_occ_mask = grid.occ_mask().copy()
+        nav_to_target_camera_obs_mask = grid.camera_obstacle_mask().copy()
+        # delete with the inflated colored goal object mask the walls to the target, before these walls are inflated that the robot do not collide with it
         nav_to_target_occ_mask[occ_mask_delete_lidar_scan_to_target] = False
+        nav_to_target_camera_obs_mask[occ_mask_delete_lidar_scan_to_target_2] = False
+        
+        
         wall_blocked  = self._inflate(nav_to_target_occ_mask, inflate_wall_cells)
-        wall_blocked[occ_mask_delete_lidar_scan_to_target] = False
+        camera_obs_blocked  = self._inflate(nav_to_target_camera_obs_mask, inflate_camera_obstacle_cells)
+        
 
-        # Low, lidar-blind obstacles (camera-only map) block the target route
-        # too -- same as walls (see occupancy_grid.integrate_camera_obstacle).
-        camera_obs_blocked = self._inflate(grid.camera_obstacle_mask(), inflate_camera_obstacle_cells)
+        # delete again in the inflated mask the walls to the target, that the target is reachable
+        wall_blocked[occ_mask_delete_lidar_scan_to_target] = False
+        camera_obs_blocked[occ_mask_delete_lidar_scan_to_target_2] = False
+
+
+
 
         blocked = wall_blocked | hazard_blocked | camera_obs_blocked
         return blocked
@@ -171,7 +184,7 @@ class PathPlanner:
     # ---------------------------------------------------------------------- #
     # Navigation grid  (main entry point for planning)
     # ---------------------------------------------------------------------- #
-    def build_nav_grid(self, grid, robot_xy, is_for_frontier=True):
+    def build_nav_grid(self, grid, robot_xy, is_for_frontier=True, reducing_factor_frontier=0):
         """Build a clean 3-value navigation grid: flood fill + obstacle inflation.
 
         This is the single source of truth for the planner and the frontier
@@ -216,7 +229,7 @@ class PathPlanner:
         """
         # Step 1: inflate obstacles -- walls, hazards, and tracked objects alike.
         if is_for_frontier:
-            blocked = self.get_block_cells_for_frontier_exploration(grid)
+            blocked = self.get_block_cells_for_frontier_exploration(grid, reducing_factor=reducing_factor_frontier)
         else:
             blocked = self.get_block_cells_for_target_navigation(grid)
 
@@ -601,6 +614,69 @@ class PathPlanner:
                 break
 
         return best_path, best
+
+    # ---------------------------------------------------------------------- #
+    # Last-resort recheck: is there a frontier hiding just behind the
+    # inflation margin? (see explorer.py: MazeExplorer._act_search())
+    # ---------------------------------------------------------------------- #
+    def find_nearest_frontier_reduced_inflation(self, grid, frontier_detector,
+                                                 robot_xy, reducing_factor=1):
+        """Look for a frontier that only exists once every inflation margin
+        is shrunk by `reducing_factor` cells, and return the WORLD position
+        of the nearest one -- or None if there isn't one even then.
+
+        WHY THIS EXISTS
+        -----------------
+        Explorer declares exploration "finished" the moment detect_cells()
+        finds zero frontier cells on the NORMAL (fully inflated) nav grid.
+        But the inflation margin can seal off a corridor that is physically
+        open -- including one sealed only by a single NOISY wall pixel (a
+        false lidar/registration blip) that the robot has simply never had
+        a clean second look at.  Since that pixel decays on its own once
+        the lidar scans it again (ordinary log-odds correction -- see
+        occupancy_grid.py), driving one cell's width closer is often enough
+        to both reveal it as noise AND expose the real frontier behind it.
+
+        This build_nav_grid(..., reducing_factor_frontier=reducing_factor)
+        call is otherwise identical to the one Explorer.PLAN uses for
+        normal frontier detection -- same detect_cells()/cluster() pipeline
+        -- just with every obstacle layer's inflation shrunk by
+        `reducing_factor` cells first.
+
+        Args:
+            grid              : OccupancyGrid.
+            frontier_detector : FrontierDetector (for detect_cells/cluster).
+            robot_xy          : (x, y) world coordinates of the robot.
+            reducing_factor   : cells to shave off every inflation margin.
+                                  Defaults to 1 (config.
+                                  FRONTIER_RECHECK_INFLATE_REDUCTION).
+
+        Returns:
+            (x, y) world coordinates of the nearest reduced-margin frontier
+            cluster's centroid, or None if none exists.
+        """
+        nav, reachable, _blocked = self.build_nav_grid(
+            grid, robot_xy, is_for_frontier=True,
+            reducing_factor_frontier=reducing_factor,
+        )
+        fmask = frontier_detector.detect_cells(nav, reachable)
+        if not fmask.any():
+            return None
+
+        clusters = frontier_detector.cluster(fmask)
+        if not clusters:
+            return None
+
+        rx, ry = robot_xy
+
+        def euclid(cl):
+            gr, gc = cl["centroid"]
+            wx, wy = grid.grid_to_world(gc, gr)
+            return math.hypot(wx - rx, wy - ry)
+
+        nearest = min(clusters, key=euclid)
+        gr, gc = nearest["centroid"]
+        return grid.grid_to_world(gc, gr)
 
     # ---------------------------------------------------------------------- #
     # Fixed-point planning (used to drive to a known target, e.g. a tracked

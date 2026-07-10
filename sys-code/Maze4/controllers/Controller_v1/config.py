@@ -173,6 +173,20 @@ FRONTIER_STICKINESS_COUNT     = 3     # times. Number of consecutive plans the t
 FRONTIER_STICKINESS_MATCH_TOL_M = 0.08  # m. How close a NEW cluster's centroid must be
                                           #    to the previous target to count as "the same one".
 
+# --- Last-resort frontier recheck (before giving up a colour search) --------
+# Explorer.finished (zero frontiers on the fully-inflated nav grid) doesn't
+# necessarily mean the maze truly has no more space to see -- the inflation
+# margin, or a single noisy/false wall pixel, can seal off a corridor that is
+# physically open (see planner.py: PathPlanner.
+# find_nearest_frontier_reduced_inflation() and explorer.py:
+# MazeExplorer._act_search()). Before a colour search actually gives up, we
+# try ONE more frontier detection pass with every inflation margin shrunk by
+# this many cells, and -- if that reveals one -- drive to the nearest one
+# using the exact same "get as close as safely possible" machinery GoToPoint
+# already uses for a sealed-off tracked object
+# (PathPlanner.plan_path_near_blocked_target()).
+FRONTIER_RECHECK_INFLATE_REDUCTION = 1   # cells
+
 # ===========================================================================
 # Path planner (A*)
 # ===========================================================================
@@ -243,7 +257,7 @@ REVERSE_TIME   = 2.5    # s   How long the robot drives backward when stuck.
 # read_roll_pitch()) stay near 0 while the robot sits flat, so a large
 # reading is a reliable "physically stuck on something the map doesn't
 # know about yet" signal -- see MazeExplorer's tip-over check.
-TIP_OVER_TILT_RAD = 0.35   # rad (~20 deg). |roll| or |pitch| beyond this
+TIP_OVER_TILT_RAD = 0.15   # rad . |roll| or |pitch| beyond this
                             # counts as tipped over.
 
 # --- Reactive safety reflex (short-range IR distance sensors) ----------------
