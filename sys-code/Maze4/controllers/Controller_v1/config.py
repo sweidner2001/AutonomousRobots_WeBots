@@ -96,14 +96,14 @@ LIDAR_USE_FOV_CENTER_DEG = 0.0    # deg. Bearing at the centre of the window;
 #   FREE     -- observed and probably empty.   White in the visualisation.
 #   OCCUPIED -- probably contains a wall.      Black in the visualisation.
 
-GRID_RESOLUTION = 0.04   # m per cell side.  Each cell is a 5 cm x 5 cm square.
+GRID_RESOLUTION = 0.03   # m per cell side.  Each cell is a 5 cm x 5 cm square.
                           # Smaller -> finer map, but more memory and slower.
 
-GRID_WIDTH_M  = 10.0     # Total map width in metres.  With 0.05 m/cell
+GRID_WIDTH_M  = 8.0     # Total map width in metres.  With 0.05 m/cell
 GRID_HEIGHT_M = 10.0     # and 16 m x 16 m, the grid is 320 x 320 cells.
 
 # Place the grid origin so that world (0,0) falls exactly in the middle.
-GRID_ORIGIN_X = -GRID_WIDTH_M  / 2.0   # world x of grid column 0
+GRID_ORIGIN_X = -GRID_WIDTH_M  / 2.0 +2  # world x of grid column 0
 GRID_ORIGIN_Y = -GRID_HEIGHT_M / 2.0   # world y of grid row    0
 
 # --- Log-odds update values (Bayesian inverse sensor model) ----------------
